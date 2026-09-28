@@ -1,42 +1,52 @@
 # 嵌入式面试知识点笔记
 
-按知识点整理面试经验。I2C 章节配有显示屏通信时序图；同一主题的新问题继续补充到对应章节。
+按主题整理面试经验。每个大主题下按问题分小节；同一知识点的新问题继续补充到对应小节。
 
 ## 目录
 
-- [I2C 显示屏通信](#i2c)
-- [C 语言：volatile](#volatile)
-- [C/C++：static](#static)
-- [C 语言：结构体内存对齐](#struct-alignment)
-- [C 语言：malloc 与 free](#malloc-free)
-- [FreeRTOS：任务调度](#freertos-scheduling)
-- [FreeRTOS：高优先级任务与饥饿](#freertos-starvation)
-- [FreeRTOS：任务间通信](#freertos-communication)
-- [FreeRTOS：创建任务](#freertos-task-creation)
-- [FreeRTOS：检查任务栈](#freertos-stack-check)
-- [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
-- [Linux：新线程的默认栈大小](#linux-thread-stack-size)
-- [Linux：创建进程](#linux-process-creation)
-- [Linux：创建线程](#linux-thread-creation)
-- [多线程与多进程](#threads-vs-processes)
-- [TCP 服务端：建立连接](#tcp-server-connection)
+- [I2C 总线与显示屏通信](#i2c)
+  - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
+- [C/C++ 基础](#c-basics)
+  - [`volatile`](#volatile) · [`static`](#static) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+- [FreeRTOS](#freertos)
+  - [任务调度](#freertos-scheduling) · [高优先级任务与饥饿](#freertos-starvation) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+- [Linux 进程与线程](#linux)
+  - [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
+- [TCP 服务端建立连接](#tcp-server-connection)
+- [嵌入式调试接口排障](#debug-interface)
+- [编程题：只用 switch case 判断分数](#switch-score)
 
 <a id="i2c"></a>
-## I2C 显示屏通信
+## I2C 总线与显示屏通信
 <!-- TOPIC:i2c:START -->
 
 下面用 **SSD1306 I2C OLED** 做写入示例。假设屏幕的 **7 位地址是 `0x3C`**，那么“地址 + 写位 `0`”组成的总线地址字节就是 **`0x78`**（`0x3C << 1`）。屏幕的实际地址可能不同；调用 I2C 驱动时，也要确认 API 要求传入 7 位地址还是已左移的地址字节。
 
-### 先记住四个信号
+<a id="i2c-signals"></a>
+### 基础时序：先记住四个信号
 
 - **START（起始）**：SCL 为高时，主控让 SDA 从高变低。
 - **数据位**：每个字节按最高位到最低位发送；SCL 为高时，SDA 保持稳定，通常在 SCL 为低时改变。
 - **ACK/NACK（应答）**：8 位数据之后还有第 **9 个 SCL 脉冲**。接收方拉低 SDA 是 ACK，保持高电平是 NACK。
 - **STOP（停止）**：SCL 为高时，主控让 SDA 从低变高。
 
+<a id="i2c-address-count"></a>
+### 7 位地址为什么不是 8 位？一条总线能接多少设备？
+
+**面试问题：为什么是 `2^7` 而不是 `2^8`？“127 个设备”怎么算？**
+
+常见的 7 位寻址格式中，START 后发送的第一个字节由 **7 位设备地址 + 1 位 R/W 方向位**组成。方向位不能算作设备地址，所以 7 位地址共有 `2^7 = 128` 种组合；`0x3C` 这个屏幕地址加写位 `0` 后形成总线字节 `0x78`。按地址格式计算，读位 `1` 会形成 `0x79`，并不代表另一台设备；这里只用于解释地址格式，**SSD1306 的 I2C 接口不提供显存回读**。
+
+“127 个设备”不是 I2C 的通用上限：它通常只扣除了 `0x00`，却忽略其他保留地址。按标准普通 7 位设备地址范围 `0x08`～`0x77` 计算，常规可分配地址有 **112 个**（128 减去首尾各 8 个保留地址）。这仍只是地址数量；实际可挂设备数还受地址冲突、总线电容、上拉电阻与速率等条件限制。某些保留地址有特定用途，不能简单当作普通设备地址使用。
+
+参考：[NXP I2C 总线规范 UM10204，保留地址表](https://www.nxp.com/docs/en/user-guide/UM10204.pdf)。
+
+<a id="i2c-examples"></a>
+### 显示屏写入与寄存器读取示例
+
 下面的图按**从上到下**的顺序画出同一次事务。每一行字节波形都包含 8 位数据和第 9 拍应答；蓝色是 SDA，灰色是 SCL。
 
-### 例 1：向 SSD1306 发送“打开显示”命令
+#### 例 1：向 SSD1306 发送“打开显示”命令
 
 ```text
 START → 0x78 → ACK → 0x00 → ACK → 0xAF → ACK → STOP
@@ -47,7 +57,7 @@ START → 0x78 → ACK → 0x00 → ACK → 0xAF → ACK → STOP
 
 ![SSD1306 打开显示命令的完整 I2C 时序：START、地址 0x78、控制字节 0x00、命令 0xAF、三个 ACK 和 STOP](images/ssd1306-command-write.svg)
 
-### 例 2：向 SSD1306 写入一个显示数据字节
+#### 例 2：向 SSD1306 写入一个显示数据字节
 
 ```text
 START → 0x78 → ACK → 0x40 → ACK → 0xFF → ACK → STOP
@@ -60,7 +70,7 @@ START → 0x78 → ACK → 0x40 → ACK → 0xFF → ACK → STOP
 
 **容易混淆：**例 1 的 `0x00` 与例 2 的 `0x40` 都是控制字节；同一个十六进制值在不同位置可能有不同含义，必须结合前面的控制字节解释。
 
-### 例 3：设备支持读取时，怎样读寄存器？
+#### 例 3：设备支持读取时，怎样读寄存器？
 
 这是**通用读流程示意，不是 SSD1306 显存回读**。为方便看每一位，假设另一台可读设备的 7 位地址为 `0x2A`、寄存器地址为 `0x10`，且读出的值为 `0x5A`：
 
@@ -75,7 +85,7 @@ START → 0x54(地址+写) → ACK → 0x10(寄存器地址) → ACK
 
 **SSD1306 的 I2C 串行接口不提供显存数据回读。**如果你的显示屏项目确实会从屏幕读取数据，请先确认控制器型号及手册中可读的寄存器；读命令、地址和应答方式要以实际控制器为准。
 
-### 读图时抓住这三点
+#### 读图时抓住这三点
 
 1. **SCL 高电平期间 SDA 发生下降或上升**，分别表示 START 或 STOP；普通数据位此时应保持不变。
 2. **每发完 8 位就看第 9 拍**：写事务中通常由屏幕回 ACK；读事务中数据由设备发，最后一个字节通常由主控回 NACK。
@@ -84,8 +94,11 @@ START → 0x54(地址+写) → ACK → 0x10(寄存器地址) → ACK
 参考：[SSD1306 数据手册，第 8.1.5 节（I2C 接口）及命令表](https://files.waveshare.com/upload/a/af/SSD1306-Revision_1.1.pdf)。
 <!-- TOPIC:i2c:END -->
 
+<a id="c-basics"></a>
+## C/C++ 基础
+
 <a id="volatile"></a>
-## C 语言：`volatile`
+### `volatile`
 <!-- TOPIC:volatile:START -->
 
 **面试问题：`volatile` 有什么作用？什么时候用？**
@@ -109,11 +122,13 @@ int main(void) {
 
 **容易混淆的点**：`volatile` 不保证读写的原子性，也不提供线程之间的同步或完整的内存顺序保证。多线程共享数据应使用原子类型或同步机制；中断与主程序之间的共享数据，还要结合目标平台确认访问宽度、原子性和必要的临界区。不要把 `volatile` 当作锁。
 
+**追问：普通变量不加 `volatile` 会怎样？加锁后为什么仍可能在寄存器中？** 对硬件寄存器轮询而言，不加 `volatile` 可能使编译器省略重复读取，看不到硬件更新；普通多线程共享变量若没有同步，还可能形成数据竞争。加锁不是“禁止使用寄存器”：CPU 仍会把值读入寄存器运算，而互斥锁负责控制并发访问和建立线程间的内存同步。所有线程都正确使用同一把锁保护普通变量时，通常无须再给它加 `volatile`。反过来，只有 `volatile` 而没有锁或原子操作，不能保证 `count++` 这样的读改写安全。[GCC 对 `volatile` 的说明](https://gcc.gnu.org/onlinedocs/gcc/Volatiles.html)；[POSIX 对互斥锁内存同步的规定](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap04.html)。
+
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:volatile:END -->
 
 <a id="static"></a>
-## C/C++：`static`
+### `static`
 <!-- TOPIC:static:START -->
 
 **面试问题：`static` 放在不同位置分别是什么意思？**
@@ -143,11 +158,15 @@ void process_data(int data[static 10]) {
 
 **区分两个概念**：局部 `static` 主要改变存储期；文件作用域 `static` 主要改变链接属性。C++ 静态类成员属于 C++ 用法，和 C 语言本身无关。
 
+**追问：与不加 `static` 的局部变量有什么区别？**例如 `int a = 0; static int b = 0;` 写在同一函数里，每次调用都会重新执行 `a` 的初始化，而 `b` 只初始化一次并保留上次的值。未显式初始化的静态存储期对象会被零初始化；未初始化的普通自动局部变量不能默认当作 0 使用。
+
+**追问：`static` 函数能跨文件使用吗？**另一个 `.c` 文件不能直接按名字调用本文件的 `static` 函数，因为它只有内部链接。如果确实要作为跨文件接口，应去掉函数定义上的 `static`，在头文件中放**声明**，并只在一个 `.c` 文件里放**定义**。不同 `.c` 文件可以各自定义同名 `static` 辅助函数而不冲突；把普通外部函数定义写进被多个 `.c` 文件包含的头文件，通常会造成重复定义。参见 [C 标准草案中的存储期与链接属性](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:static:END -->
 
 <a id="struct-alignment"></a>
-## C 语言：结构体内存对齐
+### 结构体内存对齐
 <!-- TOPIC:struct-alignment:START -->
 
 **面试问题：下列两个结构体各占多少字节？**
@@ -179,7 +198,7 @@ struct teach {
 <!-- TOPIC:struct-alignment:END -->
 
 <a id="malloc-free"></a>
-## C 语言：`malloc` 与 `free`
+### `malloc` 与 `free`
 <!-- TOPIC:malloc-free:START -->
 
 **面试问题：动态分配一个整数、赋值、打印并释放，会输出什么？**
@@ -207,8 +226,11 @@ int main(void) {
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:malloc-free:END -->
 
+<a id="freertos"></a>
+## FreeRTOS
+
 <a id="freertos-scheduling"></a>
-## FreeRTOS：任务调度
+### 任务调度
 <!-- TOPIC:freertos-scheduling:START -->
 
 **面试问题：FreeRTOS 如何选择下一个运行的任务？**
@@ -223,7 +245,7 @@ int main(void) {
 <!-- TOPIC:freertos-scheduling:END -->
 
 <a id="freertos-starvation"></a>
-## FreeRTOS：高优先级任务与饥饿
+### 高优先级任务与饥饿
 <!-- TOPIC:freertos-starvation:START -->
 
 **面试问题：高优先级任务一直运行，会不会占满 CPU？**
@@ -242,7 +264,7 @@ int main(void) {
 <!-- TOPIC:freertos-starvation:END -->
 
 <a id="freertos-communication"></a>
-## FreeRTOS：任务间通信
+### 任务间通信
 <!-- TOPIC:freertos-communication:START -->
 
 **面试问题：FreeRTOS 任务间通信有哪些方式？**
@@ -264,7 +286,7 @@ int main(void) {
 <!-- TOPIC:freertos-communication:END -->
 
 <a id="freertos-task-creation"></a>
-## FreeRTOS：创建任务
+### 创建任务
 <!-- TOPIC:freertos-task-creation:START -->
 
 **面试问题：怎么创建一个 RTOS 任务？**
@@ -279,7 +301,7 @@ int main(void) {
 <!-- TOPIC:freertos-task-creation:END -->
 
 <a id="freertos-stack-check"></a>
-## FreeRTOS：检查任务栈
+### 检查任务栈
 <!-- TOPIC:freertos-stack-check:START -->
 
 **面试问题：怎么知道任务堆栈使用情况？**
@@ -292,7 +314,7 @@ int main(void) {
 <!-- TOPIC:freertos-stack-check:END -->
 
 <a id="freertos-linux-stack"></a>
-## FreeRTOS 与 Linux 的栈
+### FreeRTOS 与 Linux 的栈
 <!-- TOPIC:freertos-linux-stack:START -->
 
 **面试问题：FreeRTOS 和 Linux 的栈区有什么区别？**
@@ -310,8 +332,11 @@ int main(void) {
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)、[FreeRTOS MPU 支持](https://www.freertos.org/Security/04-FreeRTOS-MPU-memory-protection-unit)、[Linux pthreads 手册](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
 <!-- TOPIC:freertos-linux-stack:END -->
 
+<a id="linux"></a>
+## Linux 进程与线程
+
 <a id="linux-thread-stack-size"></a>
-## Linux：新线程的默认栈大小
+### 新线程的默认栈大小
 <!-- TOPIC:linux-thread-stack-size:START -->
 
 **面试问题：Linux 创建一个线程，默认栈空间有多大？**
@@ -324,7 +349,7 @@ int main(void) {
 <!-- TOPIC:linux-thread-stack-size:END -->
 
 <a id="linux-process-creation"></a>
-## Linux：创建进程
+### 创建进程
 <!-- TOPIC:linux-process-creation:START -->
 
 **面试问题：怎么创建一个进程？**
@@ -337,7 +362,7 @@ int main(void) {
 <!-- TOPIC:linux-process-creation:END -->
 
 <a id="linux-thread-creation"></a>
-## Linux：创建线程
+### 创建线程
 <!-- TOPIC:linux-thread-creation:START -->
 
 **面试问题：怎么创建一个线程？**
@@ -350,7 +375,7 @@ Linux C 程序常用 `pthread_create(&tid, NULL, worker, arg)`：第一个参数
 <!-- TOPIC:linux-thread-creation:END -->
 
 <a id="threads-vs-processes"></a>
-## 多线程与多进程
+### 多线程与多进程
 <!-- TOPIC:threads-vs-processes:START -->
 
 **面试问题：实现同一个业务，多线程和多进程有什么区别？**
@@ -367,7 +392,7 @@ Linux C 程序常用 `pthread_create(&tid, NULL, worker, arg)`：第一个参数
 <!-- TOPIC:threads-vs-processes:END -->
 
 <a id="tcp-server-connection"></a>
-## TCP 服务端：建立连接
+## TCP 服务端建立连接
 <!-- TOPIC:tcp-server-connection:START -->
 
 **面试问题：网络编程创建连接时，服务端需要调用哪些 API？**
@@ -384,3 +409,49 @@ socket() → [setsockopt()] → bind() → listen() → accept() → recv()/send
 
 参考：[Linux `socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)、[`bind(2)`](https://man7.org/linux/man-pages/man2/bind.2.html)、[`accept(2)`](https://man7.org/linux/man-pages/man2/accept.2.html)。
 <!-- TOPIC:tcp-server-connection:END -->
+
+<a id="debug-interface"></a>
+## 嵌入式调试接口排障
+<!-- TOPIC:debug-interface:START -->
+
+**面试问题：调试接口遇到过哪些问题？请具体举例。**
+
+应按“**现象 → 排查 → 原因 → 修复与验证**”讲自己的真实经历，不要只回答“线接错了”。如果遇到过 SWD 无法连接 MCU，可以这样组织思路：
+
+1. **现象**：下载程序后，调试器无法识别或连接目标芯片。
+2. **基础排查**：确认目标板供电、共地、SWDIO、SWCLK、NRST 连线；核对调试器使用 SWD 而非 JTAG 模式，并尝试降低调试时钟。
+3. **缩小范围**：尝试在复位状态下连接。如果能连上，再检查固件是否重配了调试引脚、很快进入低功耗模式，或触发了复位循环。
+4. **修复验证**：针对找到的原因修改固件或连接配置，重新烧录，并验证冷启动后仍能稳定连接。
+
+这是**排查示例，不代表已经发生在你的项目中**。面试时应替换成自己的设备、报错、测量结果和最终原因；如果没有遇到过，就如实说“我会按这个顺序排查”。参考：[Arm 调试器连接目标设备指南](https://documentation-service.arm.com/static/6763f2ad3f2a9a07789de3ff?token=)。
+<!-- TOPIC:debug-interface:END -->
+
+<a id="switch-score"></a>
+## 编程题：只用 `switch case` 判断分数
+<!-- TOPIC:switch-score:START -->
+
+**面试问题：输入整数，80～90（含边界）输出“良好”，其余输出“未识别”；只允许使用 `switch case`。**
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int score = 0;
+    (void)scanf("%d", &score); /* 非整数输入保留初始值 0，落入 default */
+
+    switch (score) {
+        case 80: case 81: case 82: case 83: case 84:
+        case 85: case 86: case 87: case 88: case 89:
+        case 90:
+            puts("良好");
+            break;
+        default:
+            puts("未识别");
+            break;
+    }
+    return 0;
+}
+```
+
+`case` 逐个匹配整数常量，所以这里列出 80～90 的 11 个值；`break` 防止继续执行下一分支。若题目没有“只用 `switch case`”的限制，直接判断 `score >= 80 && score <= 90` 更清晰。`case 80 ... 90` 是 GCC 的范围扩展，不是标准 C 写法。
+<!-- TOPIC:switch-score:END -->
