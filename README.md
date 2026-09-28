@@ -1,6 +1,6 @@
 # 嵌入式面试知识点笔记
 
-按知识点整理面试经验。I2C 章节配有显示屏通信时序图，其他知识点保留原有笔记；以后更新同一主题时，直接追加到对应章节。
+按知识点整理面试经验。I2C 章节配有显示屏通信时序图；同一主题的新问题继续补充到对应章节。
 
 ## 目录
 
@@ -11,6 +11,15 @@
 - [C 语言：malloc 与 free](#malloc-free)
 - [FreeRTOS：任务调度](#freertos-scheduling)
 - [FreeRTOS：高优先级任务与饥饿](#freertos-starvation)
+- [FreeRTOS：任务间通信](#freertos-communication)
+- [FreeRTOS：创建任务](#freertos-task-creation)
+- [FreeRTOS：检查任务栈](#freertos-stack-check)
+- [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+- [Linux：新线程的默认栈大小](#linux-thread-stack-size)
+- [Linux：创建进程](#linux-process-creation)
+- [Linux：创建线程](#linux-thread-creation)
+- [多线程与多进程](#threads-vs-processes)
+- [TCP 服务端：建立连接](#tcp-server-connection)
 
 <a id="i2c"></a>
 ## I2C 显示屏通信
@@ -231,3 +240,147 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)；任务饥饿说明参考 [FreeRTOS 官方文档](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling)。
 <!-- TOPIC:freertos-starvation:END -->
+
+<a id="freertos-communication"></a>
+## FreeRTOS：任务间通信
+<!-- TOPIC:freertos-communication:START -->
+
+**面试问题：FreeRTOS 任务间通信有哪些方式？**
+
+可以先按用途回答：**传递数据用队列，通知事件用任务通知或信号量，保护共享资源用互斥锁**。
+
+| 机制 | 适合的场景 | 关键点 |
+| --- | --- | --- |
+| 队列 `Queue` | 任务间传递固定大小的消息 | 队列会复制消息内容；若传指针，只复制指针，需管理所指数据的生命周期。 |
+| 直接任务通知 `Task Notification` | 向确定的单个任务发事件或较小的值 | 不必单独创建队列或信号量，开销较小；接收方只能是指定任务。 |
+| 二值／计数信号量 | 完成通知、事件计数、可用资源计数 | 主要用于同步，不用来承载一段完整业务数据。 |
+| 互斥锁 `Mutex` | 多任务访问共享设备或共享变量 | 用于互斥，支持优先级继承；与普通二值信号量的用途不同。 |
+| 事件组 `Event Group` | 等待一个或多个条件同时满足 | 每一位可代表一个事件或状态。 |
+| 流／消息缓冲区 | 传连续字节流或变长消息 | 默认按单写入者、单读取者设计；多写或多读要另外同步。 |
+
+**显示屏项目例子：**业务任务把“绘制请求”放入队列，由显示任务统一更新屏幕；若多个任务必须直接访问同一条 I2C 总线，则用互斥锁保护总线事务。中断中要使用对应的 `...FromISR` API，不能直接套用会阻塞的任务 API。
+
+参考：[FreeRTOS 任务间协调文档](https://docs.aws.amazon.com/freertos/latest/userguide/inter-task-coordination.html)。
+<!-- TOPIC:freertos-communication:END -->
+
+<a id="freertos-task-creation"></a>
+## FreeRTOS：创建任务
+<!-- TOPIC:freertos-task-creation:START -->
+
+**面试问题：怎么创建一个 RTOS 任务？**
+
+1. 写一个任务入口函数，形如 `void DisplayTask(void *arg)`；任务通常在循环中处理工作，没事时阻塞等待事件，而不是空转。
+2. 调用 `xTaskCreate(DisplayTask, "display", stackDepth, arg, priority, &handle)`，传入任务函数、名称、栈深度、参数、优先级和句柄地址，并检查是否返回 `pdPASS`。
+3. 创建好需要的任务和通信对象后，调用 `vTaskStartScheduler()` 启动调度器。
+
+`xTaskCreate()` 为任务控制块和栈动态分配内存；`xTaskCreateStatic()` 则由调用者提供这两块内存。**标准 FreeRTOS 的栈深度按 `StackType_t` 元素数计，通常称为“字”，不是字节数**；使用厂商改造版时应核对该平台的 API 文档。
+
+参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)。
+<!-- TOPIC:freertos-task-creation:END -->
+
+<a id="freertos-stack-check"></a>
+## FreeRTOS：检查任务栈
+<!-- TOPIC:freertos-stack-check:START -->
+
+**面试问题：怎么知道任务堆栈使用情况？**
+
+保存任务句柄，调用 `uxTaskGetStackHighWaterMark(handle)`；传 `NULL` 可查询当前任务。返回值是任务运行以来**最少剩余过的栈空间**，并非当前瞬间的剩余量；越接近 0，距离栈溢出越近。
+
+例如创建任务时分配 256 个栈元素，测得高水位余量为 40 个元素，则曾经至少用到约 216 个元素；若每个 `StackType_t` 占 4 字节，最低余量约为 160 字节。这个值需在最深函数调用、异常处理等路径都跑过后才有参考意义，调试时还可开启 `configCHECK_FOR_STACK_OVERFLOW` 并实现 `vApplicationStackOverflowHook()`。
+
+参考：[FreeRTOS 栈检查说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch13.md)。
+<!-- TOPIC:freertos-stack-check:END -->
+
+<a id="freertos-linux-stack"></a>
+## FreeRTOS 与 Linux 的栈
+<!-- TOPIC:freertos-linux-stack:START -->
+
+**面试问题：FreeRTOS 和 Linux 的栈区有什么区别？**
+
+两者的每个任务／线程都有自己的执行栈，主要区别在**地址空间和分配方式**：
+
+| 方面 | 常见 MCU 上的 FreeRTOS | Linux 用户线程 |
+| --- | --- | --- |
+| 所在位置 | 通常是创建任务时分配或提供的一块固定 RAM。 | 位于所属进程的虚拟地址空间；新线程有自己的用户栈。 |
+| 与其他任务／线程的关系 | 普通移植通常没有进程级地址空间隔离；部分 MPU 移植可限制内存访问。 | 同一进程的线程共享堆和全局数据，但不共用各自的用户栈。 |
+| 大小与保护 | 创建时确定大小，需结合高水位和溢出检测评估。 | 可通过线程属性指定大小，通常有保护页；Linux 线程运行内核代码时还使用独立的内核栈。 |
+
+**不要把“向上增长还是向下增长”当作二者的固定区别**：栈增长方向取决于处理器架构和 ABI。
+
+参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)、[FreeRTOS MPU 支持](https://www.freertos.org/Security/04-FreeRTOS-MPU-memory-protection-unit)、[Linux pthreads 手册](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
+<!-- TOPIC:freertos-linux-stack:END -->
+
+<a id="linux-thread-stack-size"></a>
+## Linux：新线程的默认栈大小
+<!-- TOPIC:linux-thread-stack-size:START -->
+
+**面试问题：Linux 创建一个线程，默认栈空间有多大？**
+
+不能只回答“固定 8 MB”。在常见的 Linux glibc/NPTL 实现中，**程序启动时**的 `RLIMIT_STACK` 软限制若为有限值，就决定新线程的默认栈大小；不少环境恰好配置成 **8 MiB**。若该限制为 `unlimited`，多数架构使用 **2 MiB**，POWER 和 Sparc-64 使用 **4 MiB**。这里主要是虚拟地址空间的栈映射，不代表创建线程时就占满相同大小的物理内存。
+
+可用 `ulimit -s` 查看当前 shell 的栈限制；用 `pthread_getattr_np()` 配合 `pthread_attr_getstacksize()` 查询已创建线程的实际栈大小；创建线程时可通过 `pthread_attr_setstacksize()` 指定大小。主线程的栈不要与新建 pthread 的默认栈简单混为一谈。
+
+参考：[Linux `pthread_create(3)`](https://man7.org/linux/man-pages/man3/pthread_create.3.html)、[`pthread_getattr_np(3)`](https://man7.org/linux/man-pages/man3/pthread_getattr_np.3.html)。
+<!-- TOPIC:linux-thread-stack-size:END -->
+
+<a id="linux-process-creation"></a>
+## Linux：创建进程
+<!-- TOPIC:linux-process-creation:START -->
+
+**面试问题：怎么创建一个进程？**
+
+常见流程是 **`fork()` 创建子进程 → 子进程按需调用 `execve()` 运行新程序 → 父进程用 `waitpid()` 回收子进程**。`fork()` 成功时在子进程返回 `0`，在父进程返回子进程 PID；失败返回 `-1`。`execve()` 是用新程序替换当前进程中的程序映像，**它本身不创建新进程**。
+
+`fork()` 后父子进程各有自己的虚拟地址空间；Linux 通常通过写时复制避免在创建时立即复制所有物理内存。父进程要适时回收结束的子进程，避免僵尸进程。
+
+参考：[Linux `fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html)、[`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)、[`waitpid(2)`](https://man7.org/linux/man-pages/man2/waitpid.2.html)。
+<!-- TOPIC:linux-process-creation:END -->
+
+<a id="linux-thread-creation"></a>
+## Linux：创建线程
+<!-- TOPIC:linux-thread-creation:START -->
+
+**面试问题：怎么创建一个线程？**
+
+Linux C 程序常用 `pthread_create(&tid, NULL, worker, arg)`：第一个参数接收线程 ID，第二个是线程属性（`NULL` 表示默认属性），第三个是线程入口函数，第四个是传给入口函数的参数。成功返回 `0`，失败直接返回错误号。
+
+线程结束后，用 `pthread_join()` 等待并取得结果，或者把它设置为 detached，使资源在结束后自动回收。新线程与同进程其他线程共享堆、全局变量和文件描述符，但有自己的栈；访问共享数据时要考虑同步。
+
+参考：[Linux `pthread_create(3)`](https://man7.org/linux/man-pages/man3/pthread_create.3.html)、[`pthreads(7)`](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
+<!-- TOPIC:linux-thread-creation:END -->
+
+<a id="threads-vs-processes"></a>
+## 多线程与多进程
+<!-- TOPIC:threads-vs-processes:START -->
+
+**面试问题：实现同一个业务，多线程和多进程有什么区别？**
+
+| 方面 | 多线程 | 多进程 |
+| --- | --- | --- |
+| 数据共享 | 同一进程内直接共享堆和全局数据，交换信息方便，但要处理竞争和锁。 | 地址空间相互隔离，交换数据通常需要管道、套接字或共享内存等 IPC。 |
+| 故障影响 | 一个线程的严重内存错误通常会影响整个进程。 | 进程间隔离较强，单个子进程退出通常不会直接终止其他进程。 |
+| 开销与选择 | 创建和共享数据通常较轻便，适合同一服务内密切协作的工作。 | 隔离、独立部署或独立生命周期更方便，但 IPC 与管理通常更复杂。 |
+
+**两者都能利用多核。**不要笼统断言“多线程一定更快”；要根据数据共享需求、故障隔离、IPC 成本和具体负载选择。
+
+参考：[Linux `pthreads(7)`](https://man7.org/linux/man-pages/man7/pthreads.7.html)、[`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html)。
+<!-- TOPIC:threads-vs-processes:END -->
+
+<a id="tcp-server-connection"></a>
+## TCP 服务端：建立连接
+<!-- TOPIC:tcp-server-connection:START -->
+
+**面试问题：网络编程创建连接时，服务端需要调用哪些 API？**
+
+典型 TCP 服务端流程：
+
+```text
+socket() → [setsockopt()] → bind() → listen() → accept() → recv()/send() → close()
+```
+
+`socket()` 创建套接字，`bind()` 绑定本地地址和端口，`listen()` 进入监听状态，`accept()` 接收一个客户端连接并返回**新的已连接 socket**。原监听 socket 仍可继续接受新连接；读写使用新 socket。`setsockopt()` 按需设置选项，例如地址复用。处理大量并发连接时，还可结合 `poll`、`epoll`、线程或进程。
+
+**区分客户端：**主动发起连接通常由客户端调用 `connect()`，它不属于服务端上述基本流程。
+
+参考：[Linux `socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)、[`bind(2)`](https://man7.org/linux/man-pages/man2/bind.2.html)、[`accept(2)`](https://man7.org/linux/man-pages/man2/accept.2.html)。
+<!-- TOPIC:tcp-server-connection:END -->
