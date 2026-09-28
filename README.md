@@ -5,7 +5,7 @@
 ## 目录
 
 - [重点：六大内存分区](#memory-layout)
-  - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
+  - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions) · [Cache 与 DMA](#cache-dma)
 - [I2C 总线与显示屏通信](#i2c)
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [C/C++ 基础](#c-basics)
@@ -92,6 +92,44 @@ Flash / ROM                           RAM
 
 **一句话复述：**`.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
 <!-- TOPIC:memory-layout:END -->
+
+<a id="cache-dma"></a>
+### 扩展：Cache 与 DMA 为什么会读到旧数据？
+<!-- TOPIC:cache-dma:START -->
+
+**面试问题：Cache 是什么？它与 RAM、DMA 和 `volatile` 有什么关系？**
+
+**Cache（高速缓存）是 CPU 附近保存数据或指令副本的小容量高速存储**，目的是减少访问较慢内存的等待。CPU 要读某地址时，若其内容已经在 Cache 中，就是**命中**；否则是**未命中**，需要从更远的内存取入。讨论 DMA 时，主要关心数据 Cache（D-Cache）。Cache 不是 `.text`、`.data`、堆、栈之外的“第七个程序分区”：这些名称描述程序内容及其生命周期，Cache 则是硬件对其中部分内容保存的临时副本。[Arm 对 Cache 与一致性的介绍](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/exploring-how-cache-coherency-accelerates-heterogeneous-compute)
+
+```text
+CPU 寄存器：当前参与计算的少量值
+      ↕
+CPU 数据 Cache：近期访问的数据副本
+      ↕
+RAM：程序运行时存放的大量数据
+```
+
+**Cache 按“缓存行”管理数据，而非只处理一个字节。**例如某平台一行是 32 字节，读取一个字节时可能把它所在的整行取进 Cache；32 字节只是示例，实际大小看芯片手册。后续对 DMA 缓冲区执行缓存维护时，要考虑行对齐，以及缓冲区是否与其他变量共享同一行，否则可能影响邻近数据。[Linux DMA 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
+
+在使用**回写式（write-back）**数据 Cache 的平台上，CPU 修改缓冲区后，新值可能暂时只在 Cache，RAM 仍是旧值。这一行称为**脏行**。`clean` 将脏数据写回到 DMA 等设备可见的位置；`invalidate` 则使旧副本失效，让 CPU 下次重新取数据。直接丢弃仍含有未写回修改的脏行可能丢数据，因此操作顺序必须遵循芯片或驱动文档。下表只讨论 **CPU Cache 与 DMA 不自动保持一致** 的平台。[Arm 缓存维护说明](https://documentation-service.arm.com/static/684be32a3f793d5d7b223563)
+
+| 传输方向 | 可能发生的旧数据问题 | 交接缓冲区时的典型处理 |
+| --- | --- | --- |
+| **CPU 写，DMA 读**，如 CPU 准备显示数据后由 I2C DMA 发送 | 新数据还在 CPU Cache，DMA 从 RAM 读到旧数据 | DMA 开始前，按平台要求对发送缓冲区执行 **clean**。 |
+| **DMA 写，CPU 读**，如 UART DMA 接收数据 | RAM 已更新，CPU 却命中 Cache 中的旧副本 | DMA 完成、CPU 读取前，按平台要求对接收缓冲区执行 **invalidate**；有些平台还要求在 DMA 开始前处理该缓冲区。 |
+
+```text
+发送例子：CPU 把 buffer[0] 改为 0xFF → 新值暂留 Cache
+          DMA 若直接从 RAM 读到旧值 0x00 → 屏幕收到错误数据
+
+接收例子：DMA 把 RAM 中 buffer[0] 改为 0x5A
+          CPU 若从旧 Cache 读到 0x00 → 误以为没有新数据
+```
+
+**不是所有项目都要手工清理 Cache。**有的 MCU 没有启用 D-Cache；有的平台由硬件保证 CPU 与 DMA 一致；若 [I2C 显示屏](#i2c)由 CPU 直接写外设寄存器、没有使用 DMA 缓冲区，也不会按上述方式出现“DMA 读到旧缓冲区”的问题。在 Linux 驱动中应使用 DMA 映射与同步 API，让平台实现处理缓存一致性；裸机或 RTOS 下则遵循芯片手册和驱动要求。[Arm Cortex-M7 缓存维护操作](https://documentation-service.arm.com/static/61efd6602dd99944d051417b?token=)；[Linux DMA API 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
+
+**与 [`volatile`](#volatile) 区分：**`volatile` 约束编译器对对象访问的优化，不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
+<!-- TOPIC:cache-dma:END -->
 
 <a id="i2c"></a>
 ## I2C 总线与显示屏通信
