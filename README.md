@@ -17,7 +17,7 @@
 - [SPI 通信](#spi)
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [`static`](#static) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+  - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [高优先级任务与饥饿](#freertos-starvation) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
 - [Linux 进程与线程](#linux)
@@ -451,6 +451,69 @@ void process_data(int data[static 10]) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:static:END -->
+
+<a id="array-pointers"></a>
+### 数组指针与指针数组
+<!-- TOPIC:array-pointers:START -->
+
+**面试问题：`int *p[3]` 和 `int (*q)[3]` 有什么区别？**先找到变量名，再看它紧挨着什么：`p[3]` 说明 **`p` 是数组**，其中每个元素是 `int *`；`(*q)` 先把 `q` 与 `*` 结合，说明 **`q` 是指针**，它指向一个含 3 个 `int` 的数组。括号不能省，省掉就变成另一种类型。
+
+```c
+void pointer_examples(void) {
+    int a[3] = {10, 20, 30};  // a 本身是“含 3 个 int 的数组”
+    int x = 10, y = 20, z = 30;
+
+    int *p[3] = {&x, &y, &z}; // 指针数组：3 个 int * 元素
+    int (*q)[3] = &a;          // 数组指针：指向整个 int[3] 数组
+
+    *p[1] = 99;               // p[1] 指向 y，因此 y 变成 99
+    (*q)[1] = 88;             // q 指向 a，因此 a[1] 变成 88
+}
+```
+
+```text
+指针数组 p：本体是数组                数组指针 q：本体是指针
+p[0] ──→ x:10                      q ──→ a: [10][88][30]
+p[1] ──→ y:99
+p[2] ──→ z:30
+```
+
+| 比较项 | `int *p[3]`：指针数组 | `int (*q)[3]`：数组指针 |
+| --- | --- | --- |
+| 变量本身 | 一个有 3 个元素的数组。 | 一个指针变量。 |
+| 保存什么 | 每个元素各保存一个 `int` 的地址。 | 保存一个 `int[3]` 数组的地址。 |
+| 取值 | `*p[1]`：取第 2 个指针所指的整数。 | `(*q)[1]` 或 `q[0][1]`：取所指数组的第 2 个整数。 |
+| `sizeof` | `sizeof p` 是 **3 个指针元素**占的总字节数。 | `sizeof q` 是**一个指针**的字节数；`sizeof *q` 才是整个 `int[3]` 的字节数。 |
+| `+1` 的含义 | `p + 1` 指向下一个 `int *` 元素。 | `q + 1` 跨过整个 `int[3]` 数组。 |
+
+**数组名又是什么？**在上例中，`a` 的类型是 `int[3]`，它不是指针变量。不过在多数表达式里，`a` 会转换为指向首元素的 `int *`；`&a` 的类型则是 `int (*)[3]`，正好可以赋给 `q`。`a` 与 `&a` 指向的起始位置相同，但**类型和 `+1` 的步长不同**：`a + 1` 前进一个 `int`，`&a + 1` 前进一个完整的 `int[3]`。不要解引用指向对象末尾之后的指针。[C 标准草案：数组转换与指针运算](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+**为什么 `sizeof(a)` 不等于 `sizeof(q)`？**`sizeof` 是数组自动转成首元素指针的主要例外之一：在定义 `a` 的作用域内，`sizeof a` 得到整个数组的字节数，即 `3 * sizeof(int)`；`sizeof q` 只得到指针大小。`sizeof a / sizeof a[0]` 可以在这里求元素个数，不能对一个普通指针照搬这个公式。函数形参 `int a[]` 会调整成 `int *a`，因此在这样的函数内部对形参使用 `sizeof a` 得到的是指针大小，并不知道调用者数组有几个元素；长度应另传。[C 标准草案：`sizeof` 与数组形参](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+#### 二维数组为什么常用数组指针？
+
+```c
+#include <stddef.h>
+
+void print_rows(int rows[][3], size_t count); // 形参调整后是 int (*rows)[3]
+
+void matrix_example(void) {
+    int matrix[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    int (*row)[3] = matrix; // matrix 在这里转换成指向第 1 行的指针
+
+    int first = row[0][0]; // 1
+    int last  = row[1][2]; // 6；row + 1 指向下一整行
+
+    print_rows(matrix, 2);
+    (void)first;
+    (void)last;
+}
+```
+
+`matrix` 的每一行都是一个 `int[3]`，各行连续存放，所以转换后的类型是 `int (*)[3]`，**不是 `int **`**。`int **` 表示“指向 `int *` 的指针”，适用于另有一个指针数组等情形；若把连续的二维数组强制当成 `int **` 使用，程序会把整数数据误当作地址读取，属于错误用法。上例函数声明需要包含 `<stddef.h>` 才能使用 `size_t`。[C 标准草案：多维数组与形参调整](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+**一句话回答：**“指针数组首先是**数组**，里面装多个指针；数组指针首先是**指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
+<!-- TOPIC:array-pointers:END -->
 
 <a id="struct-alignment"></a>
 ### 结构体内存对齐
