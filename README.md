@@ -715,7 +715,32 @@ flowchart LR
 
 **反转的关键：H 的优先级高于 M，却因为 L 持锁而间接受 M 的运行影响。** 这里 M 抢占的是 L；H 已经因等锁而阻塞，并非 M 直接抢占了 H。它也不同于上节的 [任务饥饿](#freertos-starvation)：问题的核心是高优先级任务依赖低优先级持锁者释放资源。
 
-使用 FreeRTOS **Mutex（互斥锁）** 时，基础的 **优先级继承** 会在 H 等待 L 持有的锁时暂时提高 L 的优先级，使 M 不能在这段时间以原优先级抢占 L；L 尽快完成临界区并释放锁后，H 才有机会继续。优先级继承只能减轻部分延迟，不能让 H 跳过等锁，也不能替代缩短持锁时间、避免在持锁期间做漫长等待。**普通二值信号量没有 Mutex 的优先级继承机制。** [FreeRTOS Mutex 与优先级继承说明](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
+**解决思路：正确使用 FreeRTOS Mutex。** H 等待 L 持有的 Mutex 时，内核会自动让 L 暂时继承 H 的优先级，使 M 不能按原优先级抢占 L；L 释放锁后，H 才能继续。**不需要自己调用 `vTaskPrioritySet()` 手工升降 L 的优先级**，但需要创建 Mutex，并让所有访问同一共享资源的任务都按约定拿锁、释放锁。
+
+例如多个任务共用 I2C 总线时，在启动调度器前创建一把锁，访问总线的任务使用同一把锁。以下假设 I2C 写入函数在传输完成后才返回：
+
+```c
+SemaphoreHandle_t i2cMutex;
+
+void InitI2CLock(void) {
+    i2cMutex = xSemaphoreCreateMutex();
+    configASSERT(i2cMutex != NULL);
+}
+
+void DisplayTask(void *arg) {
+    for (;;) {
+        /* 先等待一次绘制请求；此处省略队列接收代码。 */
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            DisplayI2CWrite();  /* 示例函数：替换成项目中的 I2C 写入函数。 */
+            xSemaphoreGive(i2cMutex);
+        } else {
+            /* 取得锁超时：按项目要求处理，不要直接访问总线。 */
+        }
+    }
+}
+```
+
+**使用边界：** 拿到锁的任务应尽快释放它，避免持锁做漫长等待；同一任务负责拿锁和还锁。若使用异步 I2C/DMA，不能在传输尚未结束时释放总线锁。普通二值信号量没有 Mutex 的优先级继承机制。中断处理函数不能使用 Mutex；中断通知任务应使用合适的 `...FromISR` API。优先级继承只能减轻部分反转延迟，不能让 H 跳过等锁，也不能替代对最坏等待时间的分析。[FreeRTOS Mutex 与优先级继承说明](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
 <!-- TOPIC:freertos-priority-inversion:END -->
 
 <a id="freertos-realtime"></a>
