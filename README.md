@@ -5,7 +5,9 @@
 ## 目录
 
 - [六大内存分区](#memory-layout)
-  - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions) · [Cache 与 DMA](#cache-dma)
+  - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
+- [Cache 与 DMA](#cache-dma)
+  - [Cache 基础](#cache-basics) · [DMA 与缓存一致性](#dma-coherency)
 - [I2C 总线与显示屏通信](#i2c)
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [C/C++ 基础](#c-basics)
@@ -94,10 +96,13 @@ Flash / ROM                           RAM
 <!-- TOPIC:memory-layout:END -->
 
 <a id="cache-dma"></a>
-### 扩展：Cache 与 DMA 为什么会读到旧数据？
+## Cache 与 DMA
 <!-- TOPIC:cache-dma:START -->
 
 **面试问题：Cache 是什么？它与 RAM、DMA 和 `volatile` 有什么关系？**
+
+<a id="cache-basics"></a>
+### Cache 基础
 
 **Cache（高速缓存）是 CPU 附近保存数据或指令副本的小容量高速存储**，目的是减少访问较慢内存的等待。CPU 要读某地址时，若其内容已经在 Cache 中，就是**命中**；否则是**未命中**，需要从更远的内存取入。讨论 DMA 时，主要关心数据 Cache（D-Cache）。Cache 不是 `.text`、`.data`、堆、栈之外的“第七个程序分区”：这些名称描述程序内容及其生命周期，Cache 则是硬件对其中部分内容保存的临时副本。[Arm 对 Cache 与一致性的介绍](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/exploring-how-cache-coherency-accelerates-heterogeneous-compute)
 
@@ -111,7 +116,10 @@ RAM：程序运行时存放的大量数据
 
 **Cache 按“缓存行”管理数据，而非只处理一个字节。**例如某平台一行是 32 字节，读取一个字节时可能把它所在的整行取进 Cache；32 字节只是示例，实际大小看芯片手册。后续对 DMA 缓冲区执行缓存维护时，要考虑行对齐，以及缓冲区是否与其他变量共享同一行，否则可能影响邻近数据。[Linux DMA 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
 
-在使用**回写式（write-back）**数据 Cache 的平台上，CPU 修改缓冲区后，新值可能暂时只在 Cache，RAM 仍是旧值。这一行称为**脏行**。`clean` 将脏数据写回到 DMA 等设备可见的位置；`invalidate` 则使旧副本失效，让 CPU 下次重新取数据。直接丢弃仍含有未写回修改的脏行可能丢数据，因此操作顺序必须遵循芯片或驱动文档。下表只讨论 **CPU Cache 与 DMA 不自动保持一致** 的平台。[Arm 缓存维护说明](https://documentation-service.arm.com/static/684be32a3f793d5d7b223563)
+<a id="dma-coherency"></a>
+### DMA 与缓存一致性
+
+DMA 让外设与内存交换数据时无需 CPU 逐字节搬运；CPU 通常负责配置传输、处理完成事件等工作。在使用**回写式（write-back）**数据 Cache 的平台上，CPU 修改缓冲区后，新值可能暂时只在 Cache，RAM 仍是旧值。这一行称为**脏行**。`clean` 将脏数据写回到 DMA 等设备可见的位置；`invalidate` 则使旧副本失效，让 CPU 下次重新取数据。直接丢弃仍含有未写回修改的脏行可能丢数据，因此操作顺序必须遵循芯片或驱动文档。下表只讨论 **CPU Cache 与 DMA 不自动保持一致** 的平台。[Arm 缓存维护说明](https://documentation-service.arm.com/static/684be32a3f793d5d7b223563)
 
 | 传输方向 | 可能发生的旧数据问题 | 交接缓冲区时的典型处理 |
 | --- | --- | --- |
