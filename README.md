@@ -20,6 +20,8 @@
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [SPI 通信](#spi)
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
+- [CRC 校验](#crc)
+  - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
@@ -360,6 +362,8 @@ DMA 让外设与内存交换数据时无需 CPU 逐字节搬运；CPU 通常负�
 
 下面用 **SSD1306 I2C OLED** 做写入示例。假设屏幕的 **7 位地址是 `0x3C`**，那么“地址 + 写位 `0`”组成的总线地址字节就是 **`0x78`**（`0x3C << 1`）。屏幕的实际地址可能不同；调用 I2C 驱动时，也要确认 API 要求传入 7 位地址还是已左移的地址字节。
 
+I2C 的 ACK 与设备协议中的 [CRC 校验](#crc)是不同的概念；是否带 CRC 字节由具体器件手册决定。
+
 <a id="i2c-signals"></a>
 ### 基础时序：先记住四个信号
 
@@ -491,6 +495,78 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 参考：[Analog Devices：SPI 基础、全双工与模式表](https://www.analog.com/en/resources/analog-dialogue/articles/introduction-to-spi-interface.html)；[Microchip：SPI 时钟模式说明](https://onlinedocs.microchip.com/oxy/GUID-76938A18-C47D-4351-9D02-463E8A957829-en-US-8/GUID-D8B41778-0B24-41AB-AB85-5F5130FB7D87.html)。
 <!-- TOPIC:spi:END -->
 
+<a id="crc"></a>
+## CRC 校验
+<!-- TOPIC:crc:START -->
+
+**CRC（循环冗余校验）用来发现数据在传输或存储时是否发生变化。**发送方按约定算法计算校验值，把它与数据一起发送；接收方对收到的数据重新计算，再与收到的校验值比较。不相同就判为校验失败；相同表示**通过这次检错**，并不保证数据绝对正确。CRC 本身不能修复数据，也不能代替加密或身份认证。
+
+<a id="crc-width"></a>
+### CRC8、CRC16、CRC32 有什么区别？
+
+| 名称 | 校验值宽度 | 附加开销 | 常见例子 |
+| --- | --- | --- | --- |
+| CRC8 | 8 位 | 1 字节 | SMBus 的 PEC、部分传感器报文 |
+| CRC16 | 16 位 | 2 字节 | Modbus 串行通信等 |
+| CRC32 | 32 位 | 4 字节 | 较大数据块、文件或固件数据的检错 |
+
+**数字表示校验值长度，不表示原始数据长度。**1 字节的数据也能按协议使用 CRC16；多个字节的数据也能使用 CRC8。校验值越长，附加开销越大；实际检错能力还取决于**多项式、报文长度和错误模式**，不能只看 8、16、32。[SMBus 规范](https://smbus.org/specs/SMBus_3_3_1_20241020.pdf)；[Modbus 串行规范](https://www.modbus.org/modbus-specifications)；[CRC 多项式研究](https://users.ece.cmu.edu/~koopman/roses/dsn04/koopman04_crc_poly_embedded.pdf)
+
+**只说“使用 CRC16”还不足以让双方算出相同结果。**通信双方至少要核对校验宽度、生成多项式、初始值、输入/输出是否按位反射、最终异或值、参与计算的字节范围；多字节 CRC 还要核对发送时的字节顺序。例如 CRC32 与 CRC32C 都是 32 位，但使用不同多项式，不能直接互换。[Linux 内核 CRC 接口文档](https://www.kernel.org/doc/html/next/core-api/kernel-api.html)
+
+<a id="crc-process"></a>
+### 一次校验怎么完成？
+
+```text
+发送方：原始数据 ──按约定参数计算──→ CRC
+                     │                  │
+                     └────发送 数据 + CRC──→ 接收方
+                                             │
+                                             └──重新计算并比较
+                                                 相同：通过；不同：丢弃或重试
+```
+
+假设双方约定采用多项式 `0x07`、初始值 `0x00`、不反射、最终异或 `0x00` 的 CRC8，对单独的 `0x01` 计算会得到 `0x07`。发送 `[0x01, 0x07]`；接收方对 `0x01` 重算也得到 `0x07`，便通过校验。若数据误变成 `0x00`、附带的 CRC 仍是 `0x07`，重算得到 `0x00`，就会失败。这只是**单字节演示**；真正的 SMBus PEC 要按规范把规定的地址及数据字节都纳入计算。[SMBus 规范：PEC](https://smbus.org/specs/SMBus_3_3_1_20241020.pdf)
+
+<a id="crc-device"></a>
+### MCU 写了 CRC，外设怎么知道？
+
+**外设不会因为 MCU 写了一个 CRC 函数就自动配合。**先看器件数据手册或通信协议：若外设支持 CRC，厂商已经在外设硬件或固件中实现了规则，MCU 按相同规则收发；若外设是另一块可编程 MCU，两端程序需要约定一致；若外设根本不发送或检查 CRC，MCU 单方面附加一个 CRC 字节也无法实现双方的通信校验。I2C 的 ACK 只表示该字节被应答，不等于整条业务数据通过 CRC 检查。
+
+**传感器例子：**SHT3x 温湿度传感器在每两个测量数据字节后发送一个 CRC8 字节，其说明书规定多项式 `0x31`、初始值 `0xFF`。MCU 取前两个数据字节按该参数计算，与第三个字节比较；温度和湿度各自的两字节数据分别校验。不能擅自改用前面演示的 `0x07` 参数。[Sensirion SHT3x 数据手册](https://sensirion.com/media/documents/213E6A3B/63A5A569/Datasheet_SHT3x_DIS.pdf)
+
+**本地存储例子：**把参数及其 CRC 一起写入 MCU 的 Flash，下次读取时由同一台 MCU 重算并比较，不需要外设参与。但 CRC 只能帮助发现数据损坏；要处理断电期间写入不完整，还需另外设计有效标记、版本或备份等更新策略。参见 [Flash 参数持久化](#flash-parameters)。
+
+<a id="crc-example"></a>
+### C 语言 CRC8 示例
+
+下面是**高位优先、不反射、最终不异或**的逐位实现。`poly`、`init` 由具体协议提供；它不代表所有名为“CRC8”的算法。
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+
+uint8_t crc8_msb(const uint8_t *data, size_t len,
+                 uint8_t poly, uint8_t init) {
+    uint8_t crc = init;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (unsigned bit = 0; bit < 8; ++bit) {
+            crc = (crc & 0x80u)
+                ? (uint8_t)((crc << 1) ^ poly)
+                : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+/* 单字节演示：data=0x01、poly=0x07、init=0x00，结果为 0x07。 */
+/* SHT3x：crc8_msb(response, 2, 0x31, 0xFF) == response[2]。 */
+```
+
+调用时保证 `data` 指向至少 `len` 个有效字节。实际项目还要核对参与校验的字段、CRC 字节位置、是否使用硬件 CRC 单元，以及驱动与外设的参数是否完全一致。
+<!-- TOPIC:crc:END -->
+
 <a id="smartcard-internship"></a>
 ## 智能卡读卡器实习技术
 
@@ -509,7 +585,7 @@ ISO7816 是接触式智能卡通信相关标准；T=0、T=1 是卡与读卡器�
 <a id="flash-parameters"></a>
 ### Flash 参数持久化
 
-参数写入 Flash 前，先做有效性和范围校验；更新时按目标芯片规定的擦除单位、写入粒度及对齐要求操作，并检查返回状态。还要考虑掉电或中断写入时如何识别旧数据与新数据。简历中的 **QuadWord 写入** 是项目采用的具体写入方式，实际粒度以所用 STM32H563 的参考手册和工程配置为准；“软件变量在 RAM 还是 Flash”可对照 [六大内存分区](#memory-layout)。
+参数写入 Flash 前，先做有效性和范围校验；更新时按目标芯片规定的擦除单位、写入粒度及对齐要求操作，并检查返回状态。还要考虑掉电或中断写入时如何识别旧数据与新数据；若另存 [CRC](#crc)，它可帮助发现数据损坏，但不能单独保证断电时写入的完整性。简历中的 **QuadWord 写入** 是项目采用的具体写入方式，实际粒度以所用 STM32H563 的参考手册和工程配置为准；“软件变量在 RAM 还是 Flash”可对照 [六大内存分区](#memory-layout)。
 
 <a id="usbx-ccid"></a>
 ### USBX 与 CCID
