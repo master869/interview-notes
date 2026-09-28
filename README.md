@@ -20,7 +20,7 @@
   - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
-  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
 - [Linux 进程与线程](#linux)
   - [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
@@ -698,6 +698,26 @@ flowchart LR
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)；任务饥饿说明参考 [FreeRTOS 官方文档](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling)。
 <!-- TOPIC:freertos-starvation:END -->
 
+<a id="freertos-priority-inversion"></a>
+### 优先级反转
+<!-- TOPIC:freertos-priority-inversion:START -->
+
+**面试问题：什么是优先级反转？如何处理？**
+
+以单核、抢占式调度下共享一把锁的高（H）、中（M）、低（L）三个任务为例：
+
+| 顺序 | 发生的事 | 谁能运行 |
+| --- | --- | --- |
+| 1 | L 正在运行，先拿到锁。 | L |
+| 2 | H 变为 `Ready` 并抢占 L；H 申请同一把锁，拿不到，进入 `Blocked`。 | L 原本可以继续运行 |
+| 3 | M 变为 `Ready`，抢占 L。 | M；L 无法运行、无法及时释放锁 |
+| 4 | H 一直等 L 释放锁；若 M 长时间运行，等待会继续延长。 | M 间接拖延了比自己优先级更高的 H |
+
+**反转的关键：H 的优先级高于 M，却因为 L 持锁而间接受 M 的运行影响。** 这里 M 抢占的是 L；H 已经因等锁而阻塞，并非 M 直接抢占了 H。它也不同于上节的 [任务饥饿](#freertos-starvation)：问题的核心是高优先级任务依赖低优先级持锁者释放资源。
+
+使用 FreeRTOS **Mutex（互斥锁）** 时，基础的 **优先级继承** 会在 H 等待 L 持有的锁时暂时提高 L 的优先级，使 M 不能在这段时间以原优先级抢占 L；L 尽快完成临界区并释放锁后，H 才有机会继续。优先级继承只能减轻部分延迟，不能让 H 跳过等锁，也不能替代缩短持锁时间、避免在持锁期间做漫长等待。**普通二值信号量没有 Mutex 的优先级继承机制。** [FreeRTOS Mutex 与优先级继承说明](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
+<!-- TOPIC:freertos-priority-inversion:END -->
+
 <a id="freertos-realtime"></a>
 ### 怎样满足实时要求
 <!-- TOPIC:freertos-realtime:START -->
@@ -706,7 +726,7 @@ flowchart LR
 
 **实时性看关键工作能否在截止时间前完成，不等于平均运行速度快。** 例如传感器数据到来后要求 2 ms 内处理完：等待调度 0.2 ms、执行代码 0.3 ms，总响应时间为 0.5 ms，满足期限；若处理代码仍只需 0.3 ms，但等互斥锁耗费 3 ms，就错过期限。
 
-FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，让高优先级关键任务就绪后及时获得 CPU；周期任务可用 `vTaskDelayUntil()` 按固定节拍解除阻塞。**解除阻塞只是变成 `Ready`，不等于这一刻已经开始执行。** 互斥锁的优先级继承可以减轻部分优先级反转，但不能消除所有等待。[FreeRTOS 实时性说明](https://freertos.org/Why-FreeRTOS/What-is-FreeRTOS)、[周期任务说明](https://www.freertos.org/media/2018/FreeRTOS_Reference_Manual_V10.0.0.pdf)、[FreeRTOS 互斥锁](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
+FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，让高优先级关键任务就绪后及时获得 CPU；周期任务可用 `vTaskDelayUntil()` 按固定节拍解除阻塞。**解除阻塞只是变成 `Ready`，不等于这一刻已经开始执行。** 共享资源造成的等待与 [优先级反转](#freertos-priority-inversion) 也要计入响应时间。[FreeRTOS 实时性说明](https://freertos.org/Why-FreeRTOS/What-is-FreeRTOS)、[周期任务说明](https://www.freertos.org/media/2018/FreeRTOS_Reference_Manual_V10.0.0.pdf)
 
 **能否满足期限还要由项目验证：** 估算并测量任务的最坏执行时间、较高优先级任务和中断造成的延迟、关中断或临界区持续时间、共享资源的最长等待时间，并在最忙工况下检查是否错过截止时间。仅仅提高任务优先级，不能让它的算法本身运行得更快，也不能保证所有任务都准时完成。
 <!-- TOPIC:freertos-realtime:END -->
