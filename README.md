@@ -4,7 +4,7 @@
 
 ## 目录
 
-- [重点：六大内存分区](#memory-layout)
+- [六大内存分区](#memory-layout)
   - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions) · [Cache 与 DMA](#cache-dma)
 - [I2C 总线与显示屏通信](#i2c)
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
@@ -19,7 +19,7 @@
 - [编程题：只用 switch case 判断分数](#switch-score)
 
 <a id="memory-layout"></a>
-## 重点：六大内存分区
+## 六大内存分区
 <!-- TOPIC:memory-layout:START -->
 
 **面试问题：程序的 code、rodata、data、bss、heap、stack 分别存放什么？**先记住一条主线：**代码和只读常量通常随程序映像保存；有固定生命周期的可写数据在启动时准备好；运行中临时需要的空间由动态分配器或函数调用管理。**这里说的“六大分区”是常见教学模型，不表示物理内存一定被等分或严格按这个顺序排列；实际布局取决于编译器、链接脚本和平台。
