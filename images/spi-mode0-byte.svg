@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 350" role="img" aria-labelledby="title desc"><title id="title">SPI 模式 0：八拍同时发送和接收一个字节</title><desc id="desc">CS 低有效；SCLK 空闲低，每拍上升沿采样。MOSI 按最高位先发 0xA5，MISO 同时返回 0x3C。</desc><style>text{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;fill:#1f2937;font-size:15px}.minor{fill:#4b5563;font-size:13px}.axis{stroke:#6b7280;stroke-width:2.5;fill:none;stroke-linejoin:round}.mosi{stroke:#1d4ed8;stroke-width:3;fill:none;stroke-linejoin:round}.miso{stroke:#047857;stroke-width:3;fill:none;stroke-linejoin:round}.guide{stroke:#cbd5e1;stroke-width:1;stroke-dasharray:3 4}</style><rect width="950" height="350" fill="#fff"/><text x="16" y="33" font-size="18" font-weight="600">SPI 模式 0 · MSB 先发 · 上升沿采样</text><text x="16" y="82">CS</text><text x="16" y="140">SCLK</text><text x="16" y="211">MOSI</text><text x="16" y="291">MISO</text>
+<path class="guide" d="M 138.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="138.0" y="71">bit7</text>
+<text text-anchor="middle" x="138.0" y="249">1</text>
+<text text-anchor="middle" x="138.0" y="329">0</text>
+<path class="guide" d="M 234.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="234.0" y="71">bit6</text>
+<text text-anchor="middle" x="234.0" y="249">0</text>
+<text text-anchor="middle" x="234.0" y="329">0</text>
+<path class="guide" d="M 330.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="330.0" y="71">bit5</text>
+<text text-anchor="middle" x="330.0" y="249">1</text>
+<text text-anchor="middle" x="330.0" y="329">1</text>
+<path class="guide" d="M 426.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="426.0" y="71">bit4</text>
+<text text-anchor="middle" x="426.0" y="249">0</text>
+<text text-anchor="middle" x="426.0" y="329">1</text>
+<path class="guide" d="M 522.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="522.0" y="71">bit3</text>
+<text text-anchor="middle" x="522.0" y="249">0</text>
+<text text-anchor="middle" x="522.0" y="329">1</text>
+<path class="guide" d="M 618.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="618.0" y="71">bit2</text>
+<text text-anchor="middle" x="618.0" y="249">1</text>
+<text text-anchor="middle" x="618.0" y="329">1</text>
+<path class="guide" d="M 714.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="714.0" y="71">bit1</text>
+<text text-anchor="middle" x="714.0" y="249">0</text>
+<text text-anchor="middle" x="714.0" y="329">0</text>
+<path class="guide" d="M 810.0 92 V 315"/>
+<text class="minor" text-anchor="middle" x="810.0" y="71">bit0</text>
+<text text-anchor="middle" x="810.0" y="249">1</text>
+<text text-anchor="middle" x="810.0" y="329">0</text>
+<path class="axis" d="M 69 78 H 80 V 96 H 870 V 78 H 935"/>
+<path class="axis" d="M 69 136 H 90 H 138.0 V 112 H 186 V 136 H 234.0 V 112 H 282 V 136 H 330.0 V 112 H 378 V 136 H 426.0 V 112 H 474 V 136 H 522.0 V 112 H 570 V 136 H 618.0 V 112 H 666 V 136 H 714.0 V 112 H 762 V 136 H 810.0 V 112 H 858 V 136 H 935"/>
+<path class="mosi" d="M 69 184 H 90 H 186 V 216 H 282 V 184 H 378 V 216 H 474 V 216 H 570 V 184 H 666 V 216 H 762 V 184 H 858 H 935"/>
+<path class="miso" d="M 69 296 H 90 H 186 V 296 H 282 V 264 H 378 V 264 H 474 V 264 H 570 V 264 H 666 V 296 H 762 V 296 H 858 H 935"/>
+<text class="minor" x="90" y="345">主控发送 0xA5</text>
+<text class="minor" x="612" y="345">主控接收 0x3C</text>
+</svg>

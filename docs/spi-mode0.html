@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>SPI 模式 0：逐拍看收发时序</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --text: #172033;
+      --subtle: #465366;
+      --line: #94a3b8;
+      --grid: #cbd5e1;
+      --mosi: #1d4ed8;
+      --miso: #047857;
+      --highlight: #dbeafe;
+      --button: #fff;
+      --border: #cbd5e1;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --text: #f3f4f6;
+        --subtle: #cbd5e1;
+        --line: #9ca3af;
+        --grid: #475569;
+        --mosi: #93c5fd;
+        --miso: #6ee7b7;
+        --highlight: #1e3a5f;
+        --button: #1f2937;
+        --border: #475569;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.6; }
+    main { max-width: 1040px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: clamp(1.4rem, 4vw, 2rem); line-height: 1.25; }
+    p { margin: 0 0 16px; }
+    .intro, .note { color: var(--subtle); }
+    .diagram { width: 100%; height: 340px; display: block; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; }
+    button { padding: 10px 16px; min-height: 44px; background: var(--button); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font: inherit; cursor: pointer; }
+    button:hover:not(:disabled) { border-color: var(--mosi); }
+    button:focus-visible, a:focus-visible { outline: 3px solid var(--mosi); outline-offset: 3px; }
+    button:disabled { opacity: .48; cursor: default; }
+    #status { font-variant-numeric: tabular-nums; font-weight: 600; }
+    #detail { margin-top: 14px; min-height: 3em; }
+    .note { margin-top: 24px; }
+    a { color: var(--mosi); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    @media (max-width: 420px) {
+      main { padding: 20px 12px 36px; }
+      .diagram { height: 340px; }
+      .controls { gap: 8px; }
+      button { padding: 9px 12px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>SPI 模式 0：逐拍看一个字节怎样收发</h1>
+  <p class="intro">CS 低有效，SCLK 空闲为低。主控从 MOSI 发出 <code>0xA5</code>，同时从 MISO 收到假设的 <code>0x3C</code>。每个上升沿，双方同时采样一位。</p>
+  <svg id="wave" class="diagram" role="img" aria-label="SPI 模式 0 八拍时序；当前拍由浅蓝色区域标出"></svg>
+  <noscript><p>启用 JavaScript 才能逐拍查看。<a href="https://github.com/master869/interview-notes/blob/main/images/spi-mode0-byte.svg">查看完整静态时序图</a>。</p></noscript>
+  <div class="controls" aria-label="逐拍查看">
+    <button id="previous" type="button">上一拍</button>
+    <button id="next" type="button">下一拍</button>
+    <span id="status" aria-live="polite"></span>
+  </div>
+  <p id="detail" aria-live="polite"></p>
+  <p class="note">先选中设备，并在第一个上升沿前准备好 bit7；之后在下降沿准备下一位。MISO 的返回值只是演示，实际值取决于设备协议。<a href="https://github.com/master869/interview-notes#spi">返回 SPI 知识点</a>。</p>
+</main>
+<script>
+(() => {
+  'use strict';
+  const svg = document.getElementById('wave');
+  const previous = document.getElementById('previous');
+  const next = document.getElementById('next');
+  const status = document.getElementById('status');
+  const detail = document.getElementById('detail');
+  const mosi = '10100101';
+  const miso = '00111100';
+  let bit = 0;
+
+  function element(tag, attributes = {}, value = '') {
+    const item = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, attribute] of Object.entries(attributes)) item.setAttribute(name, String(attribute));
+    if (value) item.textContent = value;
+    return item;
+  }
+
+  function line(d, color, width = 2, extra = {}) {
+    return element('path', {d, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round', ...extra});
+  }
+
+  function label(x, y, value, options = {}) {
+    return element('text', {
+      x, y, fill: options.color || 'var(--text)',
+      'font-size': options.size || 13,
+      'font-family': 'inherit',
+      'font-weight': options.weight || 400,
+      'text-anchor': options.anchor || 'middle'
+    }, value);
+  }
+
+  function dataPath(bits, x0, step, high, low) {
+    const level = digit => digit === '1' ? high : low;
+    let d = `M ${x0 - 12} ${level(bits[0])} H ${x0}`;
+    for (let index = 0; index < 8; index++) {
+      const right = x0 + (index + 1) * step;
+      d += ` H ${right}`;
+      if (index < 7) d += ` V ${level(bits[index + 1])}`;
+    }
+    return d + ` H ${x0 + 8 * step + 12}`;
+  }
+
+  function draw() {
+    const width = Math.max(320, Math.floor(svg.getBoundingClientRect().width));
+    const x0 = width < 430 ? 75 : 90;
+    const end = width - 24;
+    const step = (end - x0) / 8;
+    svg.setAttribute('viewBox', `0 0 ${width} 340`);
+    svg.replaceChildren();
+    svg.append(element('title', {}, 'SPI 模式 0 八拍收发时序'));
+    svg.append(element('desc', {}, 'CS 拉低后产生八个时钟脉冲。MOSI 为 10100101，MISO 为 00111100；每个上升沿双方同时采样，浅蓝色区域是当前拍。'));
+    svg.append(element('rect', {x: x0 + bit * step, y: 29, width: step, height: 295, fill: 'var(--highlight)'}));
+
+    for (let index = 0; index < 8; index++) {
+      const middle = x0 + (index + 0.5) * step;
+      svg.append(line(`M ${middle} 99 V 322`, 'var(--grid)', 1, {'stroke-dasharray': '3 4'}));
+      svg.append(label(middle, 48, width < 430 ? String(7 - index) : `bit${7 - index}`, {size: 12, color: 'var(--subtle)'}));
+      svg.append(label(middle, 107, '↑', {size: 16, color: 'var(--mosi)'}));
+      svg.append(label(middle, 253, mosi[index], {weight: index === bit ? 700 : 400}));
+      svg.append(label(middle, 321, miso[index], {weight: index === bit ? 700 : 400}));
+    }
+
+    svg.append(label(4, 85, 'CS', {anchor: 'start'}));
+    svg.append(label(4, 152, 'SCLK', {anchor: 'start'}));
+    svg.append(label(4, 221, 'MOSI', {anchor: 'start'}));
+    svg.append(label(4, 290, 'MISO', {anchor: 'start'}));
+
+    svg.append(line(`M ${x0 - 23} 74 H ${x0 - 13} V 94 H ${end + 12} V 74 H ${width - 3}`, 'var(--text)', 2.5));
+    let clock = `M ${x0 - 23} 160 H ${x0}`;
+    for (let index = 0; index < 8; index++) {
+      const middle = x0 + (index + 0.5) * step;
+      const right = x0 + (index + 1) * step;
+      clock += ` H ${middle} V 132 H ${right} V 160`;
+    }
+    svg.append(line(clock + ` H ${width - 3}`, 'var(--line)', 2.5));
+    svg.append(line(dataPath(mosi, x0, step, 196, 225), 'var(--mosi)', 3));
+    svg.append(line(dataPath(miso, x0, step, 264, 293), 'var(--miso)', 3));
+    svg.append(element('circle', {cx: x0 + (bit + 0.5) * step, cy: 132, r: 4, fill: 'var(--mosi)'}));
+  }
+
+  function select(index) {
+    bit = Math.max(0, Math.min(7, index));
+    status.textContent = `第 ${bit + 1} / 8 拍`;
+    detail.textContent = `上升沿：从设备采样 MOSI bit${7 - bit} = ${mosi[bit]}；主控同时采样 MISO bit${7 - bit} = ${miso[bit]}。${bit === 7 ? '这一拍之后，一字节交换完成；满足设备时序要求后再释放 CS。' : '随后在下降沿准备下一位。'}`;
+    previous.disabled = bit === 0;
+    next.disabled = bit === 7;
+    draw();
+  }
+
+  previous.addEventListener('click', () => select(bit - 1));
+  next.addEventListener('click', () => select(bit + 1));
+  window.addEventListener('keydown', event => {
+    if (event.key === 'ArrowLeft' && bit > 0) select(bit - 1);
+    if (event.key === 'ArrowRight' && bit < 7) select(bit + 1);
+  });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(draw).observe(svg);
+  window.addEventListener('resize', draw);
+  select(0);
+})();
+</script>
+</body>
+</html>
