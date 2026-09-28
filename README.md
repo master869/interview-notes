@@ -1,11 +1,15 @@
 # 嵌入式面试知识点笔记
 
-按主题整理面试经验，涵盖程序内存布局、I2C、SPI、C/C++、FreeRTOS、Linux 进程与线程，以及网络、调试和编程题。建议先掌握**六大内存分区**，再用 `static`、`malloc`、任务栈等章节把概念串起来；同一知识点的新问题继续补充到对应小节。
+按主题整理面试经验，涵盖程序内存布局、Cortex-M 寄存器与 HardFault、I2C、SPI、C/C++、FreeRTOS、Linux 进程与线程，以及网络、调试和编程题。建议先掌握**六大内存分区**，再用 `static`、`malloc`、任务栈等章节把概念串起来；同一知识点的新问题继续补充到对应小节。
 
 ## 目录
 
 - [六大内存分区](#memory-layout)
   - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
+- [Cortex-M CPU 寄存器](#cortex-m-registers)
+  - [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
+- [HardFault 定位](#hardfault)
+  - [Keil 排查步骤](#hardfault-steps) · [寄存器现场例子](#hardfault-example) · [容易误判的情况](#hardfault-pitfalls)
 - [Cache 与 DMA](#cache-dma)
   - [Cache 基础](#cache-basics) · [DMA 与缓存一致性](#dma-coherency)
 - [I2C 总线与显示屏通信](#i2c)
@@ -96,6 +100,105 @@ Flash / ROM                           RAM
 
 **一句话复述：**`.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
 <!-- TOPIC:memory-layout:END -->
+
+<a id="cortex-m-registers"></a>
+## Cortex-M CPU 寄存器
+<!-- TOPIC:cortex-m-registers:START -->
+
+以下以常见的 **Cortex-M3/M4/M7** 为例。寄存器是 CPU 内部暂存数据与状态的地方；不同芯片内核的寄存器集合可能不同。`R0`～`R12` 本质上是通用寄存器，表中的“参数”“局部值”等是**函数调用约定中的常见分工**，并非硬件规定每个寄存器只能做一件事。[Arm Cortex-M4 核心寄存器说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)；[Arm 32 位函数调用约定](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
+
+<a id="core-registers"></a>
+### R0～R15：数据、栈、返回位置与执行位置
+
+| 寄存器 | 主要作用 | 怎么记 |
+| --- | --- | --- |
+| `R0` | 常传第 1 个参数，也常放函数返回值；可作临时值。 | 第 1 个参数／返回值。 |
+| `R1` | 常传第 2 个参数；某些结果会与 `R0` 一起返回。 | 第 2 个参数。 |
+| `R2` | 常传第 3 个参数；也可作临时值。 | 第 3 个参数。 |
+| `R3` | 常传第 4 个参数；也可作临时值。 | 第 4 个参数。 |
+| `R4` | 常保存需要跨函数调用保留的值。 | 被调用函数用后通常要恢复。 |
+| `R5` | 与 `R4` 类似。 | 同上。 |
+| `R6` | 与 `R4` 类似。 | 同上。 |
+| `R7` | 与 `R4` 类似；某些编译配置也会用它辅助管理栈帧。 | 没有固定“第 7 个变量”。 |
+| `R8` | 与 `R4` 类似。 | 值通常跨调用保留。 |
+| `R9` | 用途依平台约定：可能保存变量，也可能有平台专用用途。 | 不能一概当普通临时寄存器。 |
+| `R10` | 常保存需要跨函数调用保留的值。 | 与 `R4` 类似。 |
+| `R11` | 常保存值；某些编译配置用作帧指针。 | 帧指针并非总会启用。 |
+| `R12` / `IP` | 临时寄存器；函数调用或链接器生成的跳转代码也可能使用。 | 中转值。 |
+| `R13` / `SP` | 当前栈指针；实际有主栈指针 `MSP` 和进程栈指针 `PSP`。 | 栈顶位置。 |
+| `R14` / `LR` | 函数返回信息；进入异常后常保存 `EXC_RETURN`。 | 从哪里返回。 |
+| `R15` / `PC` | 程序计数器，决定指令执行位置。 | 执行到哪里。 |
+
+例如 `add(2, 3)` 的两个整数参数通常通过 `R0`、`R1` 传入，整数结果通常通过 `R0` 返回；实际安排还取决于参数类型与调用约定。`R0`～`R3`、`R12` 常被调用过程改写；`R4`～`R11` 通常由被调用函数在使用后恢复，但 **`R9` 的约定依平台而定**。[Arm AAPCS32](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
+
+**为什么有两个 SP？**线程模式可选择使用 `MSP` 或 `PSP`，处理异常的 Handler 模式使用 `MSP`。RTOS 常让任务使用 `PSP`，异常处理使用 `MSP`；具体以所用系统实现为准。因此调试 HardFault 时，当前看到的 `SP` 不一定指向**异常发生前**保存的现场。[Arm 栈指针与异常模式说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+
+<a id="special-registers"></a>
+### 状态与控制寄存器
+
+| 寄存器 | 作用 | 排查时关注什么 |
+| --- | --- | --- |
+| `xPSR` | 程序状态寄存器，由 `APSR`、`IPSR`、`EPSR` 三部分组成。 | 异常前的状态也会进入基本异常栈帧。 |
+| `APSR` | 保存运算标志，如 `N`（负）、`Z`（零）、`C`（进位）、`V`（有符号溢出）。 | 条件判断为何跳转。 |
+| `IPSR` | 保存当前异常编号。 | `0` 表示线程模式，`3` 表示 HardFault。 |
+| `EPSR` | 保存执行状态，例如 Thumb 状态位 `T`。 | 执行状态损坏可能导致故障。 |
+| `CONTROL` | 控制线程模式的权限及使用 `MSP`/`PSP`；带 FPU 时还涉及浮点上下文。 | 当前任务使用哪套栈。 |
+| `PRIMASK` | 屏蔽所有可配置优先级异常的激活。 | 中断不响应时核对。 |
+| `BASEPRI` | 设置优先级屏蔽门槛；`0` 表示不启用该屏蔽。 | RTOS 临界区或中断屏蔽状态。 |
+| `FAULTMASK` | 启用时，除 NMI 外的异常都不能激活。 | 是否被意外设置。 |
+
+`APSR`、`IPSR`、`EPSR` 是 `xPSR` 的不同部分，不要误认为三个互不相关的数据寄存器。Cortex-M 的**优先级数值越小，实际优先级越高**。部分 Cortex-M4/M7 带 FPU，还存在 `S0`～`S31` 等浮点寄存器；是否存在、异常时是否保存浮点现场，要看具体内核和配置。[Arm 状态寄存器与异常屏蔽说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+
+**面试速记：**`R0`～`R12` 处理数据，`SP` 管栈，`LR` 管返回，`PC` 管执行位置，`xPSR` 记录状态，`CONTROL` 选运行方式，三个 MASK 寄存器影响异常屏蔽。`HFSR`、`CFSR`、`BFAR` 等是故障诊断用的**系统控制寄存器**，放在下面的排障流程里理解。
+<!-- TOPIC:cortex-m-registers:END -->
+
+<a id="hardfault"></a>
+## HardFault 定位
+<!-- TOPIC:hardfault:START -->
+
+**面试问题：程序偶发跑进 HardFault，加 `printf` 后 Bug 不复现，手头只有 Keil IDE，怎么定位？**`printf` 可能改变执行时序、栈占用和内存布局；故障暂时消失不等于已经修复。思路是**尽量保持原程序运行，故障发生时停住并保存现场，再从症状追到根因**。
+
+<a id="hardfault-steps"></a>
+### 在 Keil 中按什么顺序查？
+
+1. **停在现场。**用原来的固件运行，在 `HardFault_Handler` 入口设断点；故障发生后先记录寄存器和栈，不急着复位，也不加大量打印。Keil 的 **Peripherals → Core Peripherals → Fault Reports** 可以查看故障状态；不支持该窗口时，也可在寄存器或内存窗口读相应寄存器。[Keil 故障调试说明](https://www.keil.com/appnotes/files/apnt209.pdf)
+2. **先看故障类型。**`HFSR.FORCED=1` 表示其他故障升级为 HardFault，要继续看 `CFSR`。`CFSR` 汇总内存管理、总线和用法故障；只有 `BFARVALID` 或 `MMARVALID` 置位时，相应的 `BFAR` 或 `MMFAR` 才能当故障地址使用。[Arm 故障寄存器定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+3. **选对异常前使用的栈。**处理函数中的 `LR` 是 `EXC_RETURN`：其 bit2 为 `0`，查看 `MSP`；为 `1`，查看 `PSP`。常见基本返回值 `0xFFFFFFF9` 对应 MSP，`0xFFFFFFFD` 对应 PSP。Keil 的 Registers、Memory 窗口可查看这些值。[Keil 异常栈帧示例](https://www.keil.com/appnotes/files/apnt209.pdf)
+4. **找保存的 PC 和操作数。**若确认是**有效的基本异常栈帧**，从选中的栈指针指向处依次为 `R0、R1、R2、R3、R12、原 LR、PC、xPSR`；保存的 `PC` 在 `SP + 24` 字节处。将这个 PC 放到 Disassembly 窗口，结合 `.axf` 的源码定位、寄存器值与调用关系分析。处理函数里当前显示的 PC 指向处理函数本身，不能拿它当异常前的执行位置。Keil 的 **Call Stack + Locals → Show Caller Code** 也可辅助定位。[Arm 基本异常栈帧](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)；[Keil 窗口操作](https://www.keil.com/appnotes/files/apnt209.pdf)
+5. **追查上游并验证。**若指令只是使用了已损坏的指针，出错位置可能是**更早写坏指针**的代码。检查数组越界、任务或中断栈溢出、函数指针、并发访问与初始化时序；对可疑变量设置硬件数据断点，观察是谁改写了它。修复后用**原来的时序和负载**复现验证。
+
+```text
+有效基本异常栈帧（地址从低到高）
+SP+0   R0     SP+4   R1     SP+8   R2     SP+12  R3
+SP+16  R12    SP+20  原 LR  SP+24  原 PC  SP+28  xPSR
+                                 ↑ 用它找异常前执行的位置
+```
+
+<a id="hardfault-example"></a>
+### 通俗例子：PC 找到“撞墙处”，再找“谁把方向盘拨歪”
+
+假设 `send_display()` 中有 `*data_ptr = 0x55;`。某次运行时，`data_ptr` 被更早的代码错误改成 `0xDEAD0000`；**假设该地址在这颗 MCU 上不可访问**。程序执行写入时进入 HardFault，现场可能是：
+
+```text
+HFSR       = 0x40000000   → FORCED：其他故障升级为 HardFault
+CFSR       = 0x00008200   → PRECISERR + BFARVALID：精确总线错误，地址有效
+BFAR       = 0xDEAD0000   → 发生错误的访问地址
+EXC_RETURN = 0xFFFFFFFD   → 异常前使用 PSP
+保存的 PC   = 写入语句对应的 STR 指令地址
+```
+
+于是先从 PSP 的**有效基本栈帧**取出保存的 PC，确认它对应哪条写指令；再看该指令使用的基址寄存器，发现其中是 `0xDEAD0000`。这能说明“在这里访问坏地址”，却**还不能说明是谁把指针改坏**。下一步应沿 `data_ptr` 的赋值和生命周期往前查，或对它设置数据断点。若越界写入或任务竞争是根因，加 `printf` 恰好改变了内存布局或时序，就可能让故障暂时消失。以上数值是讲解步骤的**假设现场**，实际读数随芯片和问题变化。
+
+<a id="hardfault-pitfalls"></a>
+### 容易误判的情况
+
+- **保存的 PC 不一定就是肇事指令。**`CFSR` 若显示 `IMPRECISERR`，总线错误可能延后才报告，保存的 PC 与最初引发错误的指令无关；此时应扩大排查范围，必要时用芯片和调试器支持的指令追踪。[Arm 对精确与非精确总线错误的定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+- **异常栈帧未必可按固定偏移读。**带 FPU 的扩展帧、压栈本身出错、栈越界或已经被覆盖时，要先核对现场是否完整；不能机械读取 `SP + 24`。[Arm 异常栈帧说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+- **不要只看调用栈最上面。**它往往只是 `HardFault_Handler`；需要结合异常前的 PC、故障状态、地址和寄存器操作数。若调试器的调用栈不完整，就直接看 Memory 和 Disassembly 窗口。
+- **内核型号要先确认。**上面的 `CFSR/HFSR` 及示例主要针对 Cortex-M3/M4/M7；Cortex-M0/M0+ 可用的故障状态寄存器不同，不能照搬。
+
+**面试简答：**“我会先保持原固件，在 HardFault 入口断住，查看 `HFSR/CFSR`；用 `EXC_RETURN` 判断异常前的现场在 MSP 还是 PSP，从有效栈帧里取出保存的 PC，再结合反汇编、故障地址和操作数定位。找到触发故障的指令后，我会追查指针何时被改坏或栈何时溢出，必要时用硬件数据断点，而不是靠增加 `printf` 碰运气。”
+<!-- TOPIC:hardfault:END -->
 
 <a id="cache-dma"></a>
 ## Cache 与 DMA
