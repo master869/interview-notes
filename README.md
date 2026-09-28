@@ -28,7 +28,8 @@
   - [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [嵌入式调试接口排障](#debug-interface)
-- [编程题：只用 switch case 判断分数](#switch-score)
+- [编程题](#coding-problems)
+  - [只用 switch case 判断分数](#switch-score) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
 
 <a id="memory-layout"></a>
 ## 六大内存分区
@@ -1040,8 +1041,20 @@ socket() → [setsockopt()] → bind() → listen() → accept() → recv()/send
 这是 **排查示例，不代表已经发生在你的项目中**。面试时应替换成自己的设备、报错、测量结果和最终原因；如果没有遇到过，就如实说“我会按这个顺序排查”。参考：[Arm 调试器连接目标设备指南](https://documentation-service.arm.com/static/6763f2ad3f2a9a07789de3ff?token=)。
 <!-- TOPIC:debug-interface:END -->
 
+<a id="coding-problems"></a>
+## 编程题
+
+下面的代码均使用 C 语言。先确认输入范围、下标约定、内存由谁释放，再动手写；链表题共用下一段节点定义。
+
+```c
+typedef struct ListNode {
+    int value;
+    struct ListNode *next;
+} ListNode;
+```
+
 <a id="switch-score"></a>
-## 编程题：只用 `switch case` 判断分数
+### 只用 `switch case` 判断分数
 <!-- TOPIC:switch-score:START -->
 
 **面试问题：输入整数，80～90（含边界）输出“良好”，其余输出“未识别”；只允许使用 `switch case`。**
@@ -1069,3 +1082,252 @@ int main(void) {
 
 `case` 逐个匹配整数常量，所以这里列出 80～90 的 11 个值；`break` 防止继续执行下一分支。若题目没有“只用 `switch case`”的限制，直接判断 `score >= 80 && score <= 90` 更清晰。`case 80 ... 90` 是 GCC 的范围扩展，不是标准 C 写法。
 <!-- TOPIC:switch-score:END -->
+
+<a id="merge-sorted-lists"></a>
+### 合并两个有序链表
+<!-- TOPIC:merge-sorted-lists:START -->
+
+**题目：** 两条链表各自按非降序排列，把它们的原节点接成一条有序链表并返回新头节点。例如 `1→3→5` 与 `2→4→6` 合并为 `1→2→3→4→5→6`。
+
+**思路：** 用一个临时哑节点记录结果的头部，`tail` 始终指向结果尾部。比较两个当前节点，接入较小者并向后移动；其中一条走完后，直接接上另一条剩余部分。相等时先取 `a`，保持各链表内部原有次序。
+
+```c
+/* 使用上面的 ListNode 定义；复用原节点，不申请新节点。 */
+#include <stddef.h>
+
+ListNode *merge_sorted_lists(ListNode *a, ListNode *b) {
+    ListNode dummy = {0, NULL};
+    ListNode *tail = &dummy;
+
+    while (a != NULL && b != NULL) {
+        if (a->value <= b->value) {
+            tail->next = a;
+            a = a->next;
+        } else {
+            tail->next = b;
+            b = b->next;
+        }
+        tail = tail->next;
+    }
+    tail->next = (a != NULL) ? a : b;
+    return dummy.next;
+}
+```
+
+**检查：** 两条都空、只有一条为空、含重复值时都能处理。时间 `O(n+m)`，额外空间 `O(1)`。接好后原链表的连接关系已改变，不能再按原来的两条链表分别释放节点。[原题：Merge Two Sorted Lists](https://leetcode.com/problems/merge-two-sorted-lists/)
+<!-- TOPIC:merge-sorted-lists:END -->
+
+<a id="reverse-string"></a>
+### 字符串反转
+<!-- TOPIC:reverse-string:START -->
+
+**题目：** 原地反转一个可修改的 C 字符串，例如 `"abcd"` 变成 `"dcba"`。这指的是**字符顺序反转**，不是把一句话里的单词顺序调换。
+
+**思路：** 找到字符串长度，让左右下标向中间移动并交换字符。结尾的 `\0` 保持原位。
+
+```c
+#include <string.h>
+
+void reverse_string(char *s) {
+    if (s == NULL) return;
+
+    size_t left = 0;
+    size_t right = strlen(s); /* 指向结尾的 '\0' */
+    while (left < right) {
+        char temp = s[left];
+        s[left] = s[right - 1];
+        s[right - 1] = temp;
+        ++left;
+        --right;
+    }
+}
+
+/* 示例：char text[] = "abcd"; reverse_string(text); 结果为 "dcba"。 */
+```
+
+**检查：** 空串、单字符、奇偶长度均可；调用者必须传入可写、以 `\0` 结尾的字符数组，不能传字符串字面量。时间 `O(n)`，额外空间 `O(1)`。这里按字节反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
+<!-- TOPIC:reverse-string:END -->
+
+<a id="endianness-code"></a>
+### 判断大小端
+<!-- TOPIC:endianness-code:START -->
+
+**题目：** 写程序判断当前机器存放多字节整数时采用小端还是大端。
+
+**思路：** 一个整数 `0x0102` 有高位字节 `0x01`、低位字节 `0x02`。从它的**最低内存地址**读一个字节：读到 `0x02` 是小端，读到 `0x01` 是大端。C 允许通过 `unsigned char *` 观察对象的字节表示。
+
+```c
+#include <stdint.h>
+
+int is_little_endian(void) {
+    const uint16_t value = UINT16_C(0x0102);
+    const unsigned char *bytes = (const unsigned char *)&value;
+    return bytes[0] == 0x02;
+}
+```
+
+**检查：** 在普通纯大端或纯小端机器上，返回 1 表示小端，0 表示大端。面试时还应会画 `0x12345678` 的内存布局：小端最低地址放 `0x78`，大端最低地址放 `0x12`。这是**字节顺序**，与单个字节内部的位顺序不是一回事。[Arm 大小端说明](https://documentation-service.arm.com/static/5ff5c9fd89a395015c28fc51)
+<!-- TOPIC:endianness-code:END -->
+
+<a id="splice-linked-lists"></a>
+### 链表区间删除与拼接
+<!-- TOPIC:splice-linked-lists:START -->
+
+**本题约定：** 删除 `list1` 中从 **0 开始**的下标 `a` 到 `b`（两端都包含）的节点，再把独立链表 `list2` 接到空出的位置。例：`10→1→13→6→9→5`，删除下标 3～4 的 `6→9`，接入 `100→101`，结果是 `10→1→13→100→101→5`。有些面经只要求删除区间后连接前后两段，相当于下面的 `list2 == NULL`。
+
+**思路：** 先找到删除区间**前一个节点** `before` 和区间**后一个节点** `after`；保存要删除的首节点，再改两条连接：`before → list2`、`list2` 尾节点 `→ after`。哑节点让“从头节点开始删除”也能用同一套逻辑。
+
+```c
+#include <stddef.h>
+#include <stdlib.h>
+
+/* 前提：0 <= a <= b < list1 长度；list2 与 list1 无共享节点；
+   被删除的节点均由 malloc 分配，调用者拥有并允许本函数释放。 */
+ListNode *splice_range(ListNode *list1, size_t a, size_t b,
+                       ListNode *list2) {
+    ListNode dummy = {0, list1};
+    ListNode *before = &dummy;
+    for (size_t i = 0; i < a; ++i) before = before->next;
+
+    ListNode *removed = before->next;
+    ListNode *after = removed;
+    for (size_t i = a; i <= b; ++i) after = after->next;
+
+    if (list2 == NULL) {
+        before->next = after;
+    } else {
+        ListNode *tail = list2;
+        while (tail->next != NULL) tail = tail->next;
+        before->next = list2;
+        tail->next = after;
+    }
+
+    while (removed != after) {
+        ListNode *next = removed->next; /* 必须在 free 前保存 */
+        free(removed);
+        removed = next;
+    }
+    return dummy.next;
+}
+```
+
+**检查：** 如果题目只给链表而未说明节点是否由 `malloc` 创建，**不能直接 `free`**；此时先确认所有权，或只断开连接并由原所有者负责释放。面试时还要确认下标从 0 还是 1 开始、两端是否包含、区间是否保证有效。本实现假定输入满足注释中的前提；时间 `O(n+m)`，额外空间 `O(1)`。[相关原题：Merge In Between Linked Lists](https://leetcode.com/problems/merge-in-between-linked-lists/)
+<!-- TOPIC:splice-linked-lists:END -->
+
+<a id="linked-list-cycle"></a>
+### 判断链表是否有环
+<!-- TOPIC:linked-list-cycle:START -->
+
+**题目：** 从头节点一直沿 `next` 走，判断是否会再次走到先前经过的节点。
+
+**思路：** 快慢指针从头出发，慢指针每次走 1 步，快指针每次走 2 步；有环就会在环内相遇，无环则快指针最终到达 `NULL`。
+
+```c
+#include <stdbool.h>
+
+bool has_cycle(const ListNode *head) {
+    const ListNode *slow = head;
+    const ListNode *fast = head;
+
+    while (fast != NULL && fast->next != NULL) {
+        slow = slow->next;
+        fast = fast->next->next;
+        if (slow == fast) return true;
+    }
+    return false;
+}
+```
+
+**检查：** 空链表、单节点无环、单节点指向自己都要会分析。时间 `O(n)`，额外空间 `O(1)`。若追问**环入口**：首次相遇后让一个指针回到头节点，两者都改为每次走 1 步，再次相遇处就是入口。[原题：Linked List Cycle](https://leetcode.com/problems/linked-list-cycle/)
+<!-- TOPIC:linked-list-cycle:END -->
+
+<a id="simple-allocator"></a>
+### 简易 `malloc/free`：固定缓冲区内存分配器
+<!-- TOPIC:simple-allocator:START -->
+
+**题目：** 不调用标准库 `malloc/free`，在一块固定大小的内存中实现按字节数申请和释放。面试前要问清是否要求对齐、拆分空闲块、合并相邻块、多线程安全；下面实现前三项，**只作为单线程教学示例**，并使用不同的名字以免覆盖标准库函数。
+
+**思路：** 每块内存前放一个块头，记录可用大小、是否空闲、下一块的位置。申请时按地址顺序找第一块足够大的空闲块，空间富余就拆开；释放时标记为空闲，并把相邻空闲块合并，减轻碎片化。[FreeRTOS `heap_4` 采用相邻空闲块合并](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch03.md)。
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define POOL_BYTES 4096
+
+typedef union Block Block;
+union Block {
+    struct {
+        size_t size;  /* 块头后可用的字节数 */
+        Block *next;   /* 按内存地址顺序连接 */
+        bool free;
+    } info;
+    max_align_t alignment; /* 块头和返回地址都满足常见类型对齐 */
+};
+
+static union {
+    max_align_t alignment;
+    unsigned char bytes[POOL_BYTES];
+} pool;
+static Block *first;
+
+static void pool_init(void) {
+    if (first != NULL) return;
+    first = (Block *)(void *)pool.bytes;
+    first->info.size = POOL_BYTES - sizeof(Block);
+    first->info.next = NULL;
+    first->info.free = true;
+}
+
+void *mini_malloc(size_t size) {
+    const size_t align = _Alignof(max_align_t);
+    if (size == 0 || size > SIZE_MAX - (align - 1)) return NULL;
+    size = ((size + align - 1) / align) * align;
+    pool_init();
+
+    for (Block *b = first; b != NULL; b = b->info.next) {
+        if (!b->info.free || b->info.size < size) continue;
+        if (b->info.size - size >= sizeof(Block) + align) {
+            Block *rest = (Block *)(void *)((unsigned char *)(b + 1) + size);
+            rest->info.size = b->info.size - size - sizeof(Block);
+            rest->info.next = b->info.next;
+            rest->info.free = true;
+            b->info.size = size;
+            b->info.next = rest;
+        }
+        b->info.free = false;
+        return (void *)(b + 1);
+    }
+    return NULL; /* 没有足够大的连续空闲块 */
+}
+
+bool mini_free(void *ptr) {
+    if (ptr == NULL) return true;
+    pool_init();
+    Block *target = NULL;
+    for (Block *b = first; b != NULL; b = b->info.next) {
+        if ((void *)(b + 1) == ptr) {
+            if (b->info.free) return false; /* 重复释放 */
+            target = b;
+            break;
+        }
+    }
+    if (target == NULL) return false; /* 不是本分配器返回的地址 */
+    target->info.free = true;
+
+    for (Block *b = first; b != NULL && b->info.next != NULL; ) {
+        Block *next = b->info.next;
+        if (b->info.free && next->info.free) {
+            b->info.size += sizeof(Block) + next->info.size;
+            b->info.next = next->info.next;
+        } else {
+            b = next;
+        }
+    }
+    return true;
+}
+```
+
+**检查：** `mini_malloc(0)` 返回 `NULL` 是本示例的约定；它不等同于各平台的标准 `malloc(0)` 行为。`mini_free(NULL)` 成功，重复释放或传入非本分配器返回的地址则返回 `false`。已释放指针不能再解引用；空闲总字节数够但没有足够大的**连续**空闲块时仍可能分配失败。本示例不处理并发访问，也不能替代标准库或 FreeRTOS 的实际分配器。
+<!-- TOPIC:simple-allocator:END -->
