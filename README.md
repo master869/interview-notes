@@ -1228,7 +1228,7 @@ ListNode *merge_sorted_lists(ListNode *a, ListNode *b) {
 
 **题目：** 原地反转一个可修改的 C 字符串，例如 `"abcd"` 变成 `"dcba"`。这指的是**字符顺序反转**，不是把一句话里的单词顺序调换。
 
-**思路：** 找到字符串长度，让左右下标向中间移动并交换字符。结尾的 `\0` 保持原位。
+**写法一：以 `\0` 结尾的 C 字符串。**先用 `strlen` 找到长度，让左右下标向中间移动并交换字符。结尾的 `\0` 保持原位。
 
 ```c
 #include <string.h>
@@ -1250,7 +1250,29 @@ void reverse_string(char *s) {
 /* 示例：char text[] = "abcd"; reverse_string(text); 结果为 "dcba"。 */
 ```
 
-**检查：** 空串、单字符、奇偶长度均可；调用者必须传入可写、以 `\0` 结尾的字符数组，不能传字符串字面量。时间 `O(n)`，额外空间 `O(1)`。这里按字节反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
+**写法二：题目已经传入长度 `sSize`。**不用 `strlen`，从 `s[0]` 和 `s[sSize - 1]` 开始向中间交换；这也适用于没有 `\0` 结尾、但长度已知的字符数组。
+
+```c
+#include <stddef.h>
+
+void reverseString(char *s, int sSize) {
+    if (s == NULL || sSize <= 1) return;
+
+    int left = 0;
+    int right = sSize - 1;
+    while (left < right) {
+        char temp = s[left];
+        s[left] = s[right];
+        s[right] = temp;
+        ++left;
+        --right;
+    }
+}
+
+/* 示例：char text[] = "abcd"; reverseString(text, 4); 结果为 "dcba"。 */
+```
+
+**检查：** 两种写法都能处理空串、单字符及奇偶长度，时间 `O(n)`、额外空间 `O(1)`。传入的数组必须可写；第二种写法中 `sSize` 不包含 C 字符串末尾的 `\0`，且不能大于实际可访问的元素数。两种写法都是**按字节**反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
 <!-- TOPIC:reverse-string:END -->
 
 <a id="endianness-code"></a>
