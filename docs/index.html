@@ -3,15 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>嵌入式面试笔记 · 交互时序图</title>
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="嵌入式实践档案：实习经历、交互演示和知识笔记。">
+  <title>嵌入式实践档案</title>
   <style>
-    body { max-width: 720px; margin: 48px auto; padding: 0 20px; font: 16px/1.6 system-ui, -apple-system, "PingFang SC", sans-serif; }
-    a { color: #1d4ed8; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #182828; background: #f4f5f0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.65; }
+    a { color: inherit; }
+    a:focus-visible { outline: 3px solid #316bcf; outline-offset: 4px; }
+    .shell { width: min(1040px, calc(100% - 40px)); margin: auto; }
+    header { background: #112826; color: #edf8ed; }
+    header .shell { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 68px; }
+    .brand { font-weight: 750; text-decoration: none; }
+    header nav { display: flex; gap: 20px; font-size: 14px; }
+    header nav a { text-decoration: none; }
+    header nav a:hover { text-decoration: underline; }
+    .hero { background: #112826; color: #f6faf2; padding: 85px 0 90px; }
+    .eyebrow { margin: 0 0 13px; color: #d5f35e; letter-spacing: .16em; text-transform: uppercase; font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    h1 { font-size: clamp(42px, 6vw, 72px); line-height: 1.12; letter-spacing: -.055em; margin: 0; }
+    .hero p:last-child { color: #c6d7d1; max-width: 620px; font-size: 18px; margin: 22px 0 0; }
+    main { padding: 58px 0 80px; }
+    .section-label { color: #176954; font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; }
+    h2 { font-size: 29px; letter-spacing: -.04em; margin: 7px 0 22px; }
+    .cards { display: grid; grid-template-columns: 1.25fr .75fr; gap: 18px; }
+    .card { display: flex; flex-direction: column; min-height: 310px; border: 1px solid #d9dfd9; border-radius: 20px; padding: 28px; background: #fff; text-decoration: none; transition: transform .15s, box-shadow .15s; }
+    .card:hover { transform: translateY(-4px); box-shadow: 0 16px 38px #1a33221c; }
+    .card.featured { background: #e9f2e5; }
+    .card small { color: #176954; font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .card h3 { margin: 27px 0 10px; font-size: 28px; line-height: 1.3; letter-spacing: -.03em; }
+    .card p { color: #50615b; margin: 0; max-width: 480px; }
+    .card span { margin-top: auto; color: #175b49; font-weight: 750; }
+    .note { margin: 28px 0 0; color: #63736e; font-size: 14px; }
+    .note a { color: #175b49; text-underline-offset: 4px; }
+    footer { border-top: 1px solid #d9dfd9; padding: 25px 0; color: #697872; font-size: 13px; }
+    @media (max-width: 680px) { .hero { padding: 64px 0 68px; } .cards { grid-template-columns: 1fr; } .card { min-height: 250px; } header nav { font-size: 12px; gap: 10px; } }
+    @media (prefers-reduced-motion: reduce) { .card { transition: none; } }
   </style>
 </head>
 <body>
-  <h1>交互时序图</h1>
-  <ul><li><a href="spi-mode0.html">SPI 模式 0：逐拍看一个字节怎样收发</a></li></ul>
-  <p><a href="https://github.com/master869/interview-notes">返回面试笔记仓库</a></p>
+  <header><div class="shell"><a class="brand" href="index.html">嵌入式实践档案</a><nav aria-label="主导航"><a href="internship.html">实习经历</a><a href="https://github.com/master869/interview-notes/blob/main/README.md">知识笔记 ↗</a></nav></div></header>
+  <section class="hero"><div class="shell"><p class="eyebrow">Experience × Knowledge</p><h1>从做过的事，<br>走到用过的技术。</h1><p>用经历页面记录实际工作，用可点击的技术索引连接到嵌入式知识笔记。</p></div></section>
+  <main class="shell">
+    <span class="section-label">Explore / 01</span><h2>开始探索</h2>
+    <div class="cards">
+      <a class="card featured" href="internship.html"><small>实习经历 · 2026.06—2026.08</small><h3>智能卡读卡器固件开发</h3><p>围绕 ThreadX、I2C、ISO7816、Flash 和 USBX-CCID，查看职责、工作主线与知识点链接。</p><span>进入实习经历页 ↗</span></a>
+      <a class="card" href="spi-mode0.html"><small>交互演示 · SPI</small><h3>模式 0 的<br>八拍收发时序</h3><p>逐拍查看 SCLK、MOSI 与 MISO 如何变化。</p><span>打开时序演示 ↗</span></a>
+    </div>
+    <p class="note">当前先展示实习经历。知识讲解持续整理在 <a href="https://github.com/master869/interview-notes">README</a> 中。</p>
+  </main>
+  <footer><div class="shell">嵌入式实践档案 · 与知识笔记一起持续更新</div></footer>
 </body>
 </html>

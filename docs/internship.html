@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="嵌入式软件开发实习经历：智能卡读卡器固件、ThreadX、ISO7816、USBX 与 CCID。">
+  <title>实习经历 · 智能卡读卡器固件</title>
+  <style>
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #182828;
+      background: #f4f5f0;
+      font-synthesis: none;
+      --ink: #182828;
+      --muted: #536363;
+      --paper: #ffffff;
+      --line: #d9dfd9;
+      --dark: #112826;
+      --lime: #d5f35e;
+      --green: #176954;
+      --blue: #3257c5;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; line-height: 1.65; }
+    a { color: inherit; }
+    button { font: inherit; }
+    :focus-visible { outline: 3px solid #316bcf; outline-offset: 3px; }
+    .shell { width: min(1180px, calc(100% - 48px)); margin: auto; }
+    .topbar { background: var(--dark); color: #eaf2e8; border-bottom: 1px solid #35504b; }
+    .topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 72px; }
+    .brand { display: inline-flex; gap: 12px; align-items: center; text-decoration: none; font-weight: 750; letter-spacing: .02em; }
+    .brand-mark { display: grid; place-items: center; width: 33px; height: 33px; background: var(--lime); color: var(--dark); border-radius: 9px; font-size: 15px; }
+    .top-links { display: flex; align-items: center; gap: 26px; font-size: 14px; }
+    .top-links a { text-decoration: none; opacity: .82; }
+    .top-links a:hover { opacity: 1; text-decoration: underline; text-underline-offset: 5px; }
+    .top-links a[aria-current="page"] { opacity: 1; color: var(--lime); }
+
+    .hero { background: var(--dark); color: #f7faf4; overflow: hidden; }
+    .hero-inner { display: grid; grid-template-columns: minmax(0, 1.07fr) minmax(330px, .93fr); gap: 52px; padding: 88px 0 82px; }
+    .eyebrow { margin: 0 0 22px; color: var(--lime); letter-spacing: .16em; text-transform: uppercase; font: 700 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    h1 { margin: 0; font-size: clamp(40px, 5vw, 68px); letter-spacing: -.055em; line-height: 1.13; }
+    h1 em { color: var(--lime); font-style: normal; }
+    .hero-lead { max-width: 650px; margin: 27px 0 34px; color: #c6d7d1; font-size: clamp(16px, 1.6vw, 19px); line-height: 1.8; }
+    .hero-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+    .hero-meta span { padding: 9px 13px; border: 1px solid #45635c; border-radius: 999px; color: #e7efe9; font-size: 13px; }
+    .hero-actions { display: flex; align-items: center; gap: 20px; margin-top: 38px; flex-wrap: wrap; }
+    .primary-link { background: var(--lime); color: var(--dark); padding: 12px 19px; border-radius: 10px; text-decoration: none; font-weight: 750; }
+    .primary-link:hover { background: #e4fb8a; }
+    .text-link { color: #e4eee8; text-underline-offset: 5px; }
+
+    .system-map { align-self: center; position: relative; border: 1px solid #3b5650; border-radius: 24px; padding: 22px; background: linear-gradient(155deg, #1b3d36, #15302d 62%, #173838); box-shadow: 0 25px 60px #071b1a85; }
+    .map-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 26px; color: #c2d5c9; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .map-dots { display: flex; gap: 5px; }
+    .map-dots i { width: 6px; height: 6px; border-radius: 50%; background: #6d8b79; }
+    .map-dots i:first-child { background: var(--lime); }
+    .map-main { display: grid; grid-template-columns: repeat(2, 1fr); gap: 11px; }
+    .map-node { min-height: 113px; border: 1px solid #5b7b6e; border-radius: 15px; background: #24453c; padding: 17px; }
+    .map-node b { display: block; font-size: 16px; margin: 7px 0 2px; }
+    .map-node small { color: #b4c9bd; font-size: 12px; }
+    .map-num { color: var(--lime); font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .map-footer { margin: 18px 0 0; border-top: 1px solid #426056; padding-top: 14px; color: #b8cbc0; font-size: 12px; }
+
+    .main { padding: 64px 0 92px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 24px; }
+    .section-kicker { display: block; margin-bottom: 8px; color: var(--green); font: 700 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .13em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: clamp(28px, 3vw, 38px); letter-spacing: -.04em; line-height: 1.25; }
+    .section-head p { max-width: 430px; margin: 0; color: var(--muted); font-size: 14px; }
+    .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 58px; }
+    .flow-card { display: flex; flex-direction: column; min-height: 215px; padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); }
+    .flow-card:nth-child(2) { background: #eaf4e9; }
+    .flow-card:nth-child(3) { background: #e9effa; }
+    .flow-card:nth-child(4) { background: #f6efe7; }
+    .flow-card .num { color: var(--green); font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .flow-card h3 { margin: 18px 0 9px; font-size: 18px; line-height: 1.35; }
+    .flow-card p { margin: 0; color: #4f6260; font-size: 13px; line-height: 1.65; }
+    .flow-card .tag { margin-top: auto; padding-top: 17px; color: #2a5f52; font: 700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .knowledge { display: grid; grid-template-columns: minmax(0, .83fr) minmax(0, 1.17fr); gap: 25px; align-items: stretch; }
+    .index-card, .detail-card { border: 1px solid var(--line); border-radius: 20px; background: var(--paper); }
+    .index-card { padding: 30px; }
+    .index-card h2 { font-size: 29px; }
+    .index-card > p { color: var(--muted); margin: 10px 0 25px; font-size: 14px; }
+    .chip-list { display: flex; flex-wrap: wrap; gap: 10px; }
+    .chip { cursor: pointer; border: 1px solid #cad8d2; background: #f7faf6; border-radius: 10px; padding: 11px 14px; color: #285447; font-size: 14px; font-weight: 700; transition: background .15s, border-color .15s, transform .15s; }
+    .chip:hover { border-color: #6ba28e; transform: translateY(-2px); }
+    .chip[aria-pressed="true"] { background: var(--dark); border-color: var(--dark); color: #f7fff2; }
+    .index-hint { margin-top: 29px; display: flex; align-items: center; gap: 8px; color: #71817c; font-size: 12px; }
+    .index-hint::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #2c9b6c; }
+    .detail-card { position: relative; overflow: hidden; min-height: 310px; padding: 32px 34px; background: #fdfefb; }
+    .detail-card::after { content: ""; position: absolute; width: 210px; height: 210px; border: 1px solid #e5ebdf; border-radius: 50%; right: -70px; top: -90px; pointer-events: none; box-shadow: 0 0 0 25px #eff3ea, 0 0 0 52px #f6f8f2; opacity: .9; }
+    .detail-card > * { position: relative; z-index: 1; }
+    .detail-top { display: flex; align-items: center; justify-content: space-between; color: var(--green); font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; }
+    .detail-card h3 { margin: 28px 0 10px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.04em; }
+    .detail-card p { max-width: 640px; color: #475b55; margin: 0 0 17px; }
+    .detail-card .connection { padding-top: 16px; margin-top: 21px; border-top: 1px solid var(--line); font-size: 14px; }
+    .detail-card .connection strong { display: block; margin-bottom: 4px; color: #1d3d35; }
+    .knowledge-link { display: inline-flex; align-items: center; gap: 8px; color: #164e72; font-weight: 750; text-underline-offset: 4px; margin-top: 7px; }
+
+    .work-section { margin-top: 70px; }
+    .case-list { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    details { background: var(--paper); border: 1px solid var(--line); border-radius: 15px; overflow: hidden; }
+    summary { cursor: pointer; list-style: none; padding: 22px 24px; display: flex; justify-content: space-between; gap: 12px; align-items: center; font-weight: 750; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; flex: none; display: grid; place-items: center; width: 27px; height: 27px; border-radius: 50%; background: #ecf3e7; font-size: 19px; font-weight: 400; }
+    details[open] summary::after { content: "−"; background: var(--lime); }
+    details .case-body { padding: 0 24px 23px; color: #50615b; font-size: 14px; }
+    details .case-body p { margin: 0; }
+    .case-label { display: block; margin-bottom: 5px; color: var(--green); font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .note { margin-top: 25px; color: #667671; font-size: 12px; }
+    .footer { background: var(--dark); color: #c5d5cc; padding: 29px 0; font-size: 13px; }
+    .footer-inner { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    .footer a { color: #e1f3d3; }
+    @media (max-width: 900px) {
+      .hero-inner { grid-template-columns: 1fr; padding: 65px 0; gap: 40px; }
+      .system-map { width: min(100%, 620px); }
+      .flow { grid-template-columns: repeat(2, 1fr); }
+      .knowledge { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 28px, 1180px); }
+      .topbar-inner { min-height: 63px; }
+      .top-links { gap: 12px; font-size: 12px; }
+      .top-links a:last-child { display: none; }
+      .hero-inner { padding: 52px 0 56px; }
+      h1 { font-size: 41px; }
+      .hero-lead { margin: 20px 0 25px; }
+      .system-map { padding: 16px; }
+      .map-node { min-height: 103px; padding: 13px; }
+      .map-node b { font-size: 14px; }
+      .main { padding: 48px 0 70px; }
+      .section-head { display: block; }
+      .section-head p { margin-top: 10px; }
+      .flow, .case-list { grid-template-columns: 1fr; }
+      .flow-card { min-height: 155px; }
+      .index-card, .detail-card { padding: 24px; }
+      .detail-card { min-height: 320px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .chip { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">⌁</span><span>嵌入式实践档案</span></a>
+      <nav class="top-links" aria-label="主导航">
+        <a href="index.html">首页</a>
+        <a href="internship.html" aria-current="page">实习经历</a>
+        <a href="https://github.com/master869/interview-notes/blob/main/README.md">知识笔记 ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero" aria-labelledby="page-title">
+    <div class="shell hero-inner">
+      <div>
+        <p class="eyebrow">Experience / 01 · Internship</p>
+        <h1 id="page-title">让读卡器固件<br><em>稳定地协同工作。</em></h1>
+        <p class="hero-lead">参与基于 STM32H563、ThreadX 与 USBX 的智能卡读卡器固件开发与维护，工作覆盖任务与资源管理、卡协议通信、Flash 参数持久化，以及 USB CCID 功能迁移和问题定位。</p>
+        <div class="hero-meta" aria-label="实习信息">
+          <span>无锡融卡科技有限公司</span>
+          <span>嵌入式软件开发实习生</span>
+          <span>2026.06 — 2026.08</span>
+        </div>
+        <div class="hero-actions">
+          <a class="primary-link" href="#technical-index">探索技术索引 <span aria-hidden="true">↘</span></a>
+          <a class="text-link" href="#work-details">查看具体工作</a>
+        </div>
+      </div>
+
+      <div class="system-map" aria-label="实习工作的四个技术方向">
+        <div class="map-head"><span>Firmware work map</span><span class="map-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+        <div class="map-main">
+          <div class="map-node"><span class="map-num">01 / SYSTEM</span><b>RTOS 任务</b><small>ThreadX · 调度 · 资源</small></div>
+          <div class="map-node"><span class="map-num">02 / SYNC</span><b>并发同步</b><small>互斥 · 事件 · 队列</small></div>
+          <div class="map-node"><span class="map-num">03 / CARD</span><b>智能卡通信</b><small>ISO7816 · APDU</small></div>
+          <div class="map-node"><span class="map-num">04 / USB</span><b>设备通信</b><small>USBX · CCID</small></div>
+        </div>
+        <p class="map-footer">四个工作方向的索引示意，点击下方技术标签可查看经历与知识笔记的对应关系。</p>
+      </div>
+    </div>
+  </section>
+
+  <main class="shell main">
+    <section aria-labelledby="scope-title">
+      <div class="section-head">
+        <div><span class="section-kicker">01 / Overview</span><h2 id="scope-title">这段实习做了什么</h2></div>
+        <p>从系统任务划分，到卡片指令与 USB 通信，按实际工作内容整理为四条主线。</p>
+      </div>
+      <div class="flow">
+        <article class="flow-card"><span class="num">01</span><h3>梳理 RTOS 任务</h3><p>分析 NFC 巡检、USB 通信、Type-C 状态检测等任务，梳理优先级、线程栈、内存池与初始化流程。</p><span class="tag">ThreadX / STM32H563</span></article>
+        <article class="flow-card"><span class="num">02</span><h3>处理共享资源</h3><p>用互斥、事件标志和消息队列组织协作；优化 I2C 共享访问，让读卡任务阻塞等待、NFC 巡检非阻塞访问。</p><span class="tag">Mutex / Event Flags / I2C</span></article>
+        <article class="flow-card"><span class="num">03</span><h3>完善卡片通信</h3><p>围绕 T=0/T=1、APDU 与 PPS 开发读卡功能，并参与 Flash 参数校验、擦除和写入流程重构。</p><span class="tag">ISO7816 / APDU / Flash</span></article>
+        <article class="flow-card"><span class="num">04</span><h3>迁移与定位 USB 问题</h3><p>参与 USB CDC 向 USBX CCID 迁移，适配回调，并定位 64 字节 Bulk 端点接收阻塞问题。</p><span class="tag">USBX / CCID / TpShell</span></article>
+      </div>
+    </section>
+
+    <section id="technical-index" class="knowledge" aria-labelledby="index-title">
+      <div class="index-card">
+        <span class="section-kicker">02 / Knowledge map</span>
+        <h2 id="index-title">技术索引</h2>
+        <p>点选一个技术词，查看它在这段实习中的用法，再跳转到 README 对应知识点。</p>
+        <div class="chip-list" role="group" aria-label="实习技术栈">
+          <button class="chip" type="button" data-topic="threadx" aria-pressed="true">ThreadX / RTOS</button>
+          <button class="chip" type="button" data-topic="sync" aria-pressed="false">任务同步</button>
+          <button class="chip" type="button" data-topic="i2c" aria-pressed="false">I2C 共享总线</button>
+          <button class="chip" type="button" data-topic="apdu" aria-pressed="false">ISO7816 / APDU</button>
+          <button class="chip" type="button" data-topic="flash" aria-pressed="false">Flash 参数</button>
+          <button class="chip" type="button" data-topic="usbx" aria-pressed="false">USBX / CCID</button>
+        </div>
+        <noscript><p>启用 JavaScript 可以切换技术说明；也可以直接阅读 <a href="https://github.com/master869/interview-notes/blob/main/README.md#smartcard-internship">README 中的实习技术索引</a>。</p></noscript>
+        <div class="index-hint">知识链接指向仓库 README 的对应章节</div>
+      </div>
+      <article class="detail-card" id="topic-detail" aria-live="polite" aria-atomic="true">
+        <div class="detail-top"><span>SELECTED TOPIC</span><span id="topic-count">01 / 06</span></div>
+        <h3 id="topic-title">ThreadX / RTOS</h3>
+        <p id="topic-description">这段实习使用 ThreadX 组织 NFC 巡检、USB 通信和 Type-C 状态检测等任务，并分析优先级、线程栈与内存池。</p>
+        <div class="connection"><strong>与经历的连接</strong><span id="topic-connection">先划清任务职责，再检查初始化和调度流程，使各项外设工作能按预期协同。</span></div>
+        <a class="knowledge-link" id="topic-link" href="https://github.com/master869/interview-notes/blob/main/README.md#threadx-smartcard">阅读 ThreadX 与任务同步笔记 <span aria-hidden="true">↗</span></a>
+      </article>
+    </section>
+
+    <section class="work-section" id="work-details" aria-labelledby="details-title">
+      <div class="section-head">
+        <div><span class="section-kicker">03 / Work notes</span><h2 id="details-title">展开看具体工作</h2></div>
+        <p>点击每一项，查看简历中对应的任务和技术背景。</p>
+      </div>
+      <div class="case-list">
+        <details><summary><span><span class="case-label">SYSTEM / 01</span>任务优先级与初始化</span></summary><div class="case-body"><p>参与多任务代码梳理和模块构建，分析 NFC 巡检、USB 通信、Type-C 电源及状态检测等任务的实时性配置、线程优先级、线程栈和独立内存池，并梳理系统初始化及任务调度流程。</p></div></details>
+        <details><summary><span><span class="case-label">SYNC / 02</span>共享 I2C 总线与模块通信</span></summary><div class="case-body"><p>使用互斥锁、事件标志和消息队列实现任务同步与模块间通信；优化 I2C 共享总线访问策略，使核心读卡任务阻塞等待、NFC 巡检任务非阻塞访问，降低资源竞争及通信阻塞风险。</p></div></details>
+        <details><summary><span><span class="case-label">CARD / 03</span>卡片协议与参数保存</span></summary><div class="case-body"><p>基于 ISO7816 T=0/T=1 及 APDU 协议开发读卡相关功能，包括 PPS 参数配置和私有指令；参与 Flash 持久化重构，涉及参数校验、页擦除、QuadWord 写入、错误诊断及断电保存。</p></div></details>
+        <details><summary><span><span class="case-label">USB / 04</span>USBX CCID 迁移与问题定位</span></summary><div class="case-body"><p>参与 USB CDC 向 USBX-CCID 的迁移，适配 XfrBlock、Escape 回调以处理标准 APDU 与私有指令；结合 TpShell 和日志定位 64 字节 Bulk 端点接收阻塞问题，并提出优化方案。</p></div></details>
+      </div>
+      <p class="note">内容依据简历中的实习经历整理；此页面没有展示联系信息或未公开的实现代码。</p>
+    </section>
+  </main>
+
+  <footer class="footer"><div class="shell footer-inner"><span>嵌入式实践档案 · 实习篇</span><span><a href="index.html">返回首页</a> · <a href="https://github.com/master869/interview-notes">查看知识笔记仓库</a></span></div></footer>
+
+  <script>
+    (() => {
+      'use strict';
+      const base = 'https://github.com/master869/interview-notes/blob/main/README.md#';
+      const topics = {
+        threadx: { count: '01 / 06', title: 'ThreadX / RTOS', description: '这段实习使用 ThreadX 组织 NFC 巡检、USB 通信和 Type-C 状态检测等任务，并分析优先级、线程栈与内存池。', connection: '先划清任务职责，再检查初始化和调度流程，使各项外设工作能按预期协同。', anchor: 'threadx-smartcard', link: '阅读 ThreadX 与任务同步笔记' },
+        sync: { count: '02 / 06', title: '任务同步', description: '互斥锁用于保护共享资源；事件标志和消息队列帮助任务等待事件、传递信息。', connection: '实习中将这些机制用于任务与模块间通信，并区分读卡任务的阻塞等待与 NFC 巡检的非阻塞访问。', anchor: 'freertos-communication', link: '阅读任务间通信笔记' },
+        i2c: { count: '03 / 06', title: 'I2C 共享总线', description: '多个任务共用一条 I2C 总线时，需要协调访问时机，避免事务互相打断。', connection: '实习中优化了共享总线访问策略：核心读卡任务阻塞等待，NFC 巡检任务非阻塞访问。', anchor: 'i2c', link: '阅读 I2C 知识点' },
+        apdu: { count: '04 / 06', title: 'ISO7816 / APDU', description: 'T=0/T=1 处理卡片传输，APDU 承载上层卡命令和响应；PPS 用于相关参数协商。', connection: '实习中参与读卡功能、PPS 配置和私有指令开发。', anchor: 'iso7816-apdu', link: '阅读智能卡通信笔记' },
+        flash: { count: '05 / 06', title: 'Flash 参数持久化', description: '参数保存需要考虑校验、擦除、写入粒度、错误诊断与断电时的数据状态。', connection: '实习中参与 Flash 参数持久化重构，涉及 QuadWord 写入与断电保存。', anchor: 'flash-parameters', link: '阅读 Flash 参数笔记' },
+        usbx: { count: '06 / 06', title: 'USBX / CCID', description: 'USBX 承担 USB 设备通信；CCID 定义读卡器与主机之间的设备类交互。', connection: '实习中参与 USBX-CCID 迁移、XfrBlock / Escape 回调适配及 Bulk 接收阻塞问题定位。', anchor: 'usbx-ccid', link: '阅读 USBX 与 CCID 笔记' }
+      };
+      const buttons = [...document.querySelectorAll('[data-topic]')];
+      const fields = {
+        count: document.getElementById('topic-count'),
+        title: document.getElementById('topic-title'),
+        description: document.getElementById('topic-description'),
+        connection: document.getElementById('topic-connection'),
+        link: document.getElementById('topic-link')
+      };
+      buttons.forEach(button => button.addEventListener('click', () => {
+        const topic = topics[button.dataset.topic];
+        buttons.forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        fields.count.textContent = topic.count;
+        fields.title.textContent = topic.title;
+        fields.description.textContent = topic.description;
+        fields.connection.textContent = topic.connection;
+        fields.link.href = base + topic.anchor;
+        fields.link.firstChild.textContent = topic.link + ' ';
+      }));
+    })();
+  </script>
+</body>
+</html>

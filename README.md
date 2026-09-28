@@ -2,6 +2,8 @@
 
 按主题整理面试经验，涵盖程序内存布局、Cortex-M 寄存器、中断与 HardFault、I2C、SPI、C/C++、FreeRTOS、Linux 进程与线程，以及网络、调试和编程题。建议先掌握 **六大内存分区**，再用 `static`、`malloc`、任务栈等章节把概念串起来；同一知识点的新问题继续补充到对应小节。
 
+[查看实习经历交互页](https://master869.github.io/interview-notes/internship.html) · [查看 SPI 逐拍时序演示](https://master869.github.io/interview-notes/spi-mode0.html)
+
 ## 目录
 
 - [六大内存分区](#memory-layout)
@@ -18,6 +20,8 @@
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [SPI 通信](#spi)
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
+- [智能卡读卡器实习技术](#smartcard-internship)
+  - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
   - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
@@ -486,6 +490,31 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 
 参考：[Analog Devices：SPI 基础、全双工与模式表](https://www.analog.com/en/resources/analog-dialogue/articles/introduction-to-spi-interface.html)；[Microchip：SPI 时钟模式说明](https://onlinedocs.microchip.com/oxy/GUID-76938A18-C47D-4351-9D02-463E8A957829-en-US-8/GUID-D8B41778-0B24-41AB-AB85-5F5130FB7D87.html)。
 <!-- TOPIC:spi:END -->
+
+<a id="smartcard-internship"></a>
+## 智能卡读卡器实习技术
+
+这部分对应[实习经历交互页](https://master869.github.io/interview-notes/internship.html)，先把经历中的技术入口归到一起。以下是知识点解释；具体工作内容以实习经历页为准。
+
+<a id="threadx-smartcard"></a>
+### ThreadX 与任务同步
+
+ThreadX 是一种嵌入式 RTOS，提供线程、优先级调度、互斥量、事件标志组、消息队列和内存池。任务划分时，先区分“谁执行业务”“谁等待事件”“谁独占外设”；多个任务共用 I2C 总线时要保护访问顺序，等待事件时尽量避免无意义轮询。通用调度、互斥和队列概念也可对照本笔记的 [FreeRTOS 章节](#freertos)，但**ThreadX 和 FreeRTOS 的 API、状态名称及具体机制不能直接画等号**。[Eclipse ThreadX 官方文档](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/threadx/chapter3.md)
+
+<a id="iso7816-apdu"></a>
+### ISO7816 与 APDU
+
+ISO7816 是接触式智能卡通信相关标准；T=0、T=1 是卡与读卡器间不同的传输协议，APDU 则是上层命令和响应的数据单元。排查一条卡命令时，要分清“上层 APDU 是否正确”“底层传输是否完成”和“返回状态是否表示成功”。PPS 用于协商相关通信参数，不能把它当作普通业务 APDU。[ST 智能卡接口应用笔记](https://www.st.com/resource/en/application_note/an4100-designing-a-smartcard-interface-using-an-stm32f05xx-microcontroller-stmicroelectronics.pdf)
+
+<a id="flash-parameters"></a>
+### Flash 参数持久化
+
+参数写入 Flash 前，先做有效性和范围校验；更新时按目标芯片规定的擦除单位、写入粒度及对齐要求操作，并检查返回状态。还要考虑掉电或中断写入时如何识别旧数据与新数据。简历中的 **QuadWord 写入** 是项目采用的具体写入方式，实际粒度以所用 STM32H563 的参考手册和工程配置为准；“软件变量在 RAM 还是 Flash”可对照 [六大内存分区](#memory-layout)。
+
+<a id="usbx-ccid"></a>
+### USBX 与 CCID
+
+USBX 是嵌入式 USB 协议栈，CCID 是智能卡读卡器使用的 USB 设备类。主机侧请求进入设备后，需要由设备类处理并映射到读卡器的卡命令逻辑；实习中涉及 `XfrBlock`、`Escape` 等回调。排查端点接收阻塞时，应沿“主机请求 → USB 传输 → 类回调 → 业务处理 → 响应”逐层确认，区分协议字段错误、缓冲区处理和任务调度问题。[Eclipse USBX 官方文档](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/usbx/overview-usbx.md)
 
 <a id="c-basics"></a>
 ## C/C++ 基础
