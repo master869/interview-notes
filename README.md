@@ -20,7 +20,7 @@
   - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
-  - [任务调度](#freertos-scheduling) · [高优先级任务与饥饿](#freertos-starvation) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [高优先级任务与饥饿](#freertos-starvation) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
 - [Linux 进程与线程](#linux)
   - [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
@@ -612,6 +612,38 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)；调度规则参考 [FreeRTOS 官方文档](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling)。
 <!-- TOPIC:freertos-scheduling:END -->
+
+<a id="freertos-task-states"></a>
+### 任务的四种状态
+<!-- TOPIC:freertos-task-states:START -->
+
+**面试问题：Ready、Running、Blocked、Suspended 分别是什么意思？任务怎样切换状态？**
+
+| 状态 | 含义 | 显示任务例子 |
+| --- | --- | --- |
+| `Running` 运行 | 正在 CPU 上执行任务代码；单核系统同一时刻只有一个任务在运行。 | 正在准备画面或调用 I2C 驱动刷新屏幕。 |
+| `Ready` 就绪 | 已具备运行条件，等待调度器分配 CPU。 | 绘制请求已到达，但别的任务正在运行。 |
+| `Blocked` 阻塞 | 正在等时间到或等队列、通知、信号量等事件，暂时不能被选中运行。 | 调用 `xQueueReceive()` 等待绘制请求，或调用 `vTaskDelay()` 等待。 |
+| `Suspended` 挂起 | 被显式暂停，不参与正常调度；显式挂起不会仅因时间流逝而恢复。 | 调用 `vTaskSuspend()` 停止显示任务。 |
+
+```mermaid
+flowchart LR
+    B["Blocked 阻塞<br/>等待事件或时间"] -->|"事件发生或超时"| A["Ready 就绪<br/>等待 CPU"]
+    A -->|"调度器选中"| R["Running 运行<br/>正在执行"]
+    R -->|"被抢占或同优先级轮转"| A
+    R -->|"等待队列、通知或延时"| B
+    R -->|"vTaskSuspend()"| S["Suspended 挂起<br/>暂停调度"]
+    A -->|"vTaskSuspend()"| S
+    B -->|"vTaskSuspend()"| S
+    S -->|"vTaskResume()"| A
+```
+
+**区分 `Ready` 和 `Blocked`：** 前者现在就能运行，只差 CPU；后者还缺等待的条件，CPU 空闲也不能运行。队列收到消息或等待超时后，阻塞任务先变成 `Ready`，调度器选中它才变成 `Running`。显式挂起的任务通过 `vTaskResume()` 回到 `Ready`，也不是立刻占用 CPU。
+
+**注意调试工具里的 `S`：** FreeRTOS 内部也可能把无限期等待某事件的任务放在挂起列表中；`vTaskList()` 的 `S` 既可能表示显式挂起，也可能表示无超时阻塞。判断时要看任务调用了哪个 API，不要只凭一个字母断定它调用过 `vTaskSuspend()`。
+
+参考：[FreeRTOS 任务状态](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/02-Task-states)、[任务状态查询与 `vTaskList()`](https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities)。
+<!-- TOPIC:freertos-task-states:END -->
 
 <a id="freertos-starvation"></a>
 ### 高优先级任务与饥饿
