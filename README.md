@@ -18,6 +18,7 @@
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
 - [C/C++ 基础](#c-basics)
   - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+- [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [高优先级任务与饥饿](#freertos-starvation) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
 - [Linux 进程与线程](#linux)
@@ -575,6 +576,24 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:malloc-free:END -->
+
+<a id="baremetal-rtos-linux"></a>
+## 裸机、RTOS 与 Linux
+<!-- TOPIC:baremetal-rtos-linux:START -->
+
+**面试问题：裸机、RTOS 和 Linux 有什么区别？怎么选？**
+
+| 方面 | 裸机 | RTOS（以 FreeRTOS 为例） | Linux |
+| --- | --- | --- | --- |
+| 组织工作 | 主循环、中断、状态机；工作何时执行主要由程序员安排。 | 内核调度多个任务，提供队列、信号量等同步与通信机制。 | 内核调度进程和线程，提供文件系统、网络、驱动等功能。 |
+| 内存与隔离 | 通常直接访问硬件和内存。 | 常见 MCU 移植中的任务共享地址空间；部分平台可借助 MPU 做访问限制。 | 通常有虚拟内存和用户态／内核态隔离；不同进程拥有各自的虚拟地址空间。 |
+| 资源需求 | 最小，适合功能较简单、资源紧张的设备。 | 较小，适合多个任务并发且有明确响应期限的控制系统。 | 较大，适合界面、网络、存储等功能复杂的设备。 |
+| 响应时间 | 执行路径可控，但耗时操作或关中断过久仍会耽误响应。 | 优先级调度有利于安排紧急任务；仍需分析最坏执行时间、阻塞和中断延迟。 | 普通 Linux 功能丰富，但不能直接保证严格的最坏响应时间。 |
+
+**以 I2C 显示屏为例：** 裸机程序可以在 `while (1)` 中采集数据、更新屏幕，并用中断处理紧急事件；如果显示函数一直等待传输完成，主循环中的其他工作也会等。使用 FreeRTOS 时，可以让采集任务把数据送进队列，由显示任务取出并刷新屏幕；显示任务等待队列时，其他就绪任务可以运行。使用 Linux 时，应用程序可通过 I2C 驱动访问显示屏，同时运行界面、网络和存储程序。具体是否需要操作系统，取决于整个设备的功能与硬件资源，不由“用了 I2C”这一点决定。
+
+**回答时抓住两点：** 第一，裸机并非没有并发，中断和主循环也能配合处理多件事，只是没有现成的任务调度器。第二，**实时指在规定期限内完成，不等于平均运行速度快**；用了 RTOS 也不会自动满足所有期限，普通 Linux 也不能直接承诺硬实时。若被追问任务调度、任务通信和任务栈，继续看下方 [FreeRTOS](#freertos)；若被追问进程与线程，继续看 [Linux 进程与线程](#linux)。
+<!-- TOPIC:baremetal-rtos-linux:END -->
 
 <a id="freertos"></a>
 ## FreeRTOS
