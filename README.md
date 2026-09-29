@@ -96,6 +96,25 @@ void draw_page(void) {             // 函数指令通常在 .text
 <a id="memory-startup"></a>
 ### MCU 启动时发生什么？
 
+以**从 Flash 启动的常见 STM32/Cortex-M 裸机工程**为例，CPU 上电复位后不会直接执行 `main()`：
+
+```text
+上电 → 复位解除，CPU 使用启动时可用的时钟
+  ↓
+从选定启动地址的向量表读取前两项
+  ├─ 第 1 项：初始主栈指针 MSP
+  └─ 第 2 项：复位入口地址 → 进入 Reset_Handler
+  ↓
+Reset_Handler / 运行库启动代码
+  ├─ 把 .data 的初始值从 Flash 复制到 RAM
+  ├─ 把 .bss 清零
+  └─ 完成必要的 SystemInit、运行库初始化等步骤
+  ↓
+调用 main() → 执行业务程序
+```
+
+向量表和 `Reset_Handler` 通常由工程的 `startup_stm32xxx.s` 启动文件提供。下面这份 [ST 官方 STM32G4 启动文件](https://github.com/STMicroelectronics/STM32CubeG4/blob/master/Projects/NUCLEO-G431KB/Templates/STM32CubeIDE/Example/Startup/startup_stm32g431kbtx.s) 就依次列出初始栈地址、`Reset_Handler`，并在复位处理函数中复制 `.data`、清零 `.bss`、调用 `SystemInit` 和运行库初始化函数，最后进入 `main`。**这些初始化步骤的具体顺序以工程启动文件为准**；上电时 CPU 可先用默认启动时钟，业务需要的系统时钟配置不必都在 `main()` 之前完成。
+
 ```text
 Flash / ROM                           RAM
 ┌──────────────────────┐             ┌─────────────────────────┐
@@ -106,7 +125,9 @@ Flash / ROM                           RAM
                                      └─────────────────────────┘
 ```
 
-在常见的 Flash 运行型 MCU 程序中，启动代码先把 `.data` 的初值复制到运行时的 RAM 地址，再把 `.bss` 清零，然后才进入 `main()`。因此 `global_level` 一开始是 `3`，`global_error` 一开始是 `0`。`.data` 的初值通常同时占用固件映像空间和运行时 RAM；`.bss` 主要占用运行时 RAM。具体地址要看链接脚本或 map 文件。[GNU 链接器的 ROM/RAM 示例](https://sourceware.org/binutils/docs/ld.html)
+例如 `int count = 10;` 是可写且有非零初值的全局变量，启动代码通常把它的初值从 Flash 复制到 RAM；`int flag;` 是未显式初始化的全局变量，启动代码通常把它清零。上面的 `global_level` 和 `global_error` 也是同一原理。`.data` 的初值通常同时占用固件映像空间和运行时 RAM；`.bss` 主要占用运行时 RAM。具体地址要看链接脚本或 map 文件。[GNU 链接器的 ROM/RAM 示例](https://sourceware.org/binutils/docs/ld.html)
+
+`HAL_Init()` 和项目里的 `SystemClock_Config()` 若写在 `main()` 开头，就是 **进入 `main()` 后** 才执行；不要把它们和启动文件中的 `SystemInit()` 混为一谈。若选择芯片 ROM Bootloader 启动，或产品有[自定义 Bootloader](#bootloader-ota)，则要先经过相应引导流程，再进入应用固件的启动过程。
 
 <a id="memory-questions"></a>
 ### 面试常见追问
