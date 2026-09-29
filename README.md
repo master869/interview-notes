@@ -43,7 +43,7 @@
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
-  - [只用 switch case 判断分数](#switch-score) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
+  - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
 
 <a id="memory-layout"></a>
 ## 六大内存分区
@@ -1448,6 +1448,33 @@ int main(void) {
 
 `case` 逐个匹配整数常量，所以这里列出 80～90 的 11 个值；`break` 防止继续执行下一分支。若题目没有“只用 `switch case`”的限制，直接判断 `score >= 80 && score <= 90` 更清晰。`case 80 ... 90` 是 GCC 的范围扩展，不是标准 C 写法。
 <!-- TOPIC:switch-score:END -->
+
+<a id="bitwise-parity"></a>
+### 不用取余，按位与判断整数奇偶
+<!-- TOPIC:bitwise-parity:START -->
+
+**面试问题：不用 `% 2`，怎样判断一个整数是奇数还是偶数？** 二进制整数的最低位是 `1` 时为奇数，是 `0` 时为偶数。用按位与 `& 1` 只保留最低位：`5` 的二进制末位为 `1`，`6` 的末位为 `0`。
+
+```c
+#include <stdio.h>
+
+int is_odd(int n) {
+    return (((unsigned int)n & 1u) != 0u);
+}
+
+int main(void) {
+    int n;
+    if (scanf("%d", &n) != 1) {
+        return 1;
+    }
+
+    puts(is_odd(n) ? "奇数" : "偶数");
+    return 0;
+}
+```
+
+现场写 `n & 1` 通常就能表达思路；这里先转换成 `unsigned int`，使负数输入也无需依赖有符号整数的具体二进制表示。注意 `&` 是**按位与**，`&&` 是**逻辑与**，不能把两者当成同一运算。时间复杂度和额外空间复杂度均为 `O(1)`。
+<!-- TOPIC:bitwise-parity:END -->
 
 <a id="merge-sorted-lists"></a>
 ### 合并两个有序链表
