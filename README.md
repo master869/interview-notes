@@ -20,6 +20,8 @@
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [SPI 通信](#spi)
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
+- [UART 串口通信](#uart)
+  - [一字节时序与 8N1](#uart-frame) · [接收与业务帧解析](#uart-reception) · [排障要点](#uart-debug) · [面试常见问题](#uart-questions)
 - [CRC 校验](#crc)
   - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
 - [智能卡读卡器实习技术](#smartcard-internship)
@@ -494,6 +496,59 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 
 参考：[Analog Devices：SPI 基础、全双工与模式表](https://www.analog.com/en/resources/analog-dialogue/articles/introduction-to-spi-interface.html)；[Microchip：SPI 时钟模式说明](https://onlinedocs.microchip.com/oxy/GUID-76938A18-C47D-4351-9D02-463E8A957829-en-US-8/GUID-D8B41778-0B24-41AB-AB85-5F5130FB7D87.html)。
 <!-- TOPIC:spi:END -->
+
+<a id="uart"></a>
+## UART 串口通信
+<!-- TOPIC:uart:START -->
+
+UART 是常见的**异步串行收发**方式。典型连接是设备 A 的 TX 接设备 B 的 RX、A 的 RX 接 B 的 TX，并共地；双方预先约定波特率、数据位、校验位和停止位。与 [I2C](#i2c) 的共享总线寻址、[SPI](#spi) 的主控时钟和片选不同，常见 UART 链路没有共享时钟线，也没有统一的设备地址或每字节 ACK。它只负责逐字节收发，**业务命令的边界和格式由上层协议规定**。
+
+<a id="uart-frame"></a>
+### 一字节时序与 8N1
+
+线路空闲通常为高电平；起始位拉低线路，接收方据此确定采样时机；随后传数据位（常见为低位先发），可选奇偶校验位，最后是高电平停止位。常见的 **115200 8N1** 表示波特率 115200、8 位数据、无奇偶校验、1 位停止位。[Microchip UART 参考手册](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/ReferenceManuals/60001107H.pdf)
+
+```text
+空闲  起始位       8 个数据位（低位先发）         停止位
+  1  │  0  │ d0 d1 d2 d3 d4 d5 d6 d7 │    1
+```
+
+8N1 每传 1 字节有效数据，线路上要发 **1+8+1=10 位**。因此 115200 波特率下，理论上最多约 `115200 / 10 = 11520` 字节/秒；再扣除上层协议字段、设备处理等，实际有效载荷速率会更低。一字节的线路时间约 `10 / 115200 ≈ 86.8 μs`。波特率相同并不意味着实际采样时刻绝对相同，两端时钟误差过大仍可能造成接收错误。[Microchip 串口调试指南](https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ApplicationNotes/ApplicationNotes/TB3331-Debug-SerialInterf-EmbeddedSystems-DS90003331.pdf)
+
+<a id="uart-reception"></a>
+### 接收与业务帧解析
+
+| 接收方式 | 适用情况 | 需要注意 |
+| --- | --- | --- |
+| 轮询 | 数据很少、流程简单 | 等待期间占用 CPU，容易影响别的工作。 |
+| 接收中断 | 字节到来就及时处理 | 中断中尽量只取数据、放入缓冲区并通知任务，不做耗时解析。 |
+| DMA | 持续或较大量的数据 | 管理缓冲区写入位置、回绕及覆盖；核对半满、满和空闲事件。 |
+
+**UART 硬件的起始位/停止位只界定一个字符，不界定一条多字节业务消息。**例如设备协议可定义 `[帧头][长度][命令/数据][CRC]`；接收方逐字节状态机依次找帧头、读长度、收够数据、校验后交给业务任务。长度必须限幅；半帧要保留状态，超时或错误时要重新同步。帧头若也允许出现在负载中，使用长度字段后不应把负载里的同值字节误认成新帧头；若协议用结束符定界，则要考虑转义。[Microchip UART 命令帧示例](https://onlinedocs.microchip.com/oxy/GUID-58904FDA-338A-488F-A88D-766D29B27E37-en-US-1/GUID-EF0E0992-17AA-46DD-85CB-826FA2545D10.html)
+
+STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软件处理**当前已收到的字节**；空闲只表示出现了时间间隔，**不能脱离协议就认定是一帧结束**。DMA 回调给出的长度还要按所用 HAL 版本和接收模式解释。[ST UART Receive-to-Idle 文档](https://dev.st.com/stm32cube-docs/stm32c5xx-hal-drivers/2.0.0/en/docs/drivers/hal_drivers/uart/api/hal_uart_exported_functions.html)
+
+<a id="uart-debug"></a>
+### 收不到、乱码、丢字节怎么排查？
+
+1. **先查电气连接：** TX/RX 是否交叉、是否共地、收发器与电平是否匹配。MCU 的 UART 引脚、RS-232 和 RS-485 不是可直接互接的同一种电气接口；后两者通常需要相应收发器。
+2. **再查配置：** 波特率、数据位、校验位、停止位是否一致；检查实际时钟和示波器/逻辑分析仪上的位时间。
+3. **看错误状态：** 帧错误、奇偶校验错误、噪声错误或接收溢出（overrun）有不同含义。接收处理不及时、FIFO/软件缓冲区满时可能丢字节；必要时调整缓冲区、DMA 和流控。错误标志的清除方式按芯片手册处理。[Microchip 接收错误标志](https://onlinedocs.microchip.com/oxy/GUID-173AD72D-41FE-4760-A93C-7078A02BD908-en-US-7.1.1/GUID-7B4385C0-7B06-44CC-B8BC-07E8CDDB8721.html)
+4. **最后查协议：** 是否取错 DMA 缓冲区位置、漏了数据、长度字段解释错、校验不一致，或把一次接收回调误认为一整帧。数据完整性可按设备协议使用 [CRC](#crc)。
+
+<a id="uart-questions"></a>
+### 面试常见问题
+
+1. **UART 为什么不需要时钟线？**双方约定波特率，接收方利用起始位定位后续数据位的采样时机；因此时钟误差不能过大。
+2. **UART 是全双工吗？**典型 TX/RX 独立的连接可同时收发；具体能力仍取决于芯片、引脚和外部线路模式。
+3. **UART 与 USART 有什么区别？**USART 常表示外设还能支持同步工作方式；具体支持哪些模式，以目标芯片手册为准。
+4. **奇偶校验能替代 CRC 吗？**不能。奇偶校验只增加一个字符级校验位，可检测某些位错误，但不能保证发现所有错误；多字节业务帧按协议另做 CRC 或其他校验。
+5. **为什么发送缓冲区空了还不能立刻关闭发送器？**“可以再写下一字节”和“最后一位已从引脚移出”是两个不同状态。控制 RS-485 方向脚时，应等发送完成标志，而不是只看缓冲区空。[Microchip 发送标志说明](https://onlinedocs.microchip.com/oxy/GUID-0EC909F9-8FB7-46B2-BF4B-05290662B5C3-en-US-12.1.1/GUID-8B7DDFC1-10E0-447C-9276-A5BEE9BABDD3.html)
+6. **RTS/CTS 用来做什么？**硬件流控让接收方在缓冲区接近满时提示发送方暂缓，避免处理速度跟不上而丢数据；是否可用取决于双方硬件和配置。[Microchip 硬件流控说明](https://onlinedocs.microchip.com/oxy/GUID-167CA20A-2C0F-4CBC-A693-9FD032B9B193-en-US-1/GUID-C8B83E54-0F62-4205-98DD-B1560AACDBB4.html)
+7. **UART 传输距离能给一个固定数字吗？**不能。UART 规定收发格式；可用距离取决于电气接口、线缆、波特率、干扰、接地等条件，不能把 MCU 引脚直连和 RS-485 收发器的距离混为一谈。
+
+**面试概括：**先讲 8N1 的字节时序，再讲轮询/中断/DMA 如何接收，随后说明业务帧必须由上层协议定义，最后按电气、配置、错误标志、协议四层排查故障。
+<!-- TOPIC:uart:END -->
 
 <a id="crc"></a>
 ## CRC 校验
