@@ -41,8 +41,8 @@
 - [Linux 启动、进程与线程](#linux)
   - [嵌入式 Linux 启动主线](#linux-boot) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
-- [驱动经历与调试](#driver-experience)
-  - [驱动做过哪部分](#driver-work) · [驱动怎么调试](#driver-debug)
+- [驱动开发与调试：SI91x I2C OLED 项目](#driver-experience)
+  - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
   - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
@@ -1488,24 +1488,86 @@ socket() → [setsockopt()] → bind() → listen() → accept() → recv()/send
 <!-- TOPIC:tcp-server-connection:END -->
 
 <a id="driver-experience"></a>
-## 驱动经历与调试
+## 驱动开发与调试：SI91x I2C OLED 项目
+
+这一节结合 `wifi_http_otaf_soc_4_28` 工程中的 `oled.c`、`i2c_leader_example.c` 和 `app.c` 回答“驱动做过哪部分”和“驱动怎么调试”。下面描述的是**代码里的实现**；面试时说“我负责”之前，应确认对应部分确实由自己完成或集成，不能把 SDK 代码或假设的故障说成自己的成果。
 
 <a id="driver-work"></a>
 ### 驱动做过哪部分？
 <!-- TOPIC:driver-work:START -->
 
-**面试回答思路：** 先说设备和目标，再说自己负责的层次、关键接口、遇到的问题和验证结果，避免把使用现成驱动说成从零编写底层驱动。
+先把“驱动”拆成三层，回答时才不会把设备驱动和控制器驱动混在一起：
 
-以 I2C 显示屏项目为例，如果底层总线由 MCU 厂商 HAL 驱动提供，可以如实说：自己在设备层实现显示屏初始化命令、显示数据组织和发送、错误码处理，并调用 HAL 的 I2C 收发接口；I2C 控制器驱动本身由 HAL 提供。具体只保留自己实际做过的部分，通信格式见 [I2C](#i2c)。如果做的是 Linux 设备驱动，还可以说明设备树匹配、`probe` 获取资源、读写或控制接口、卸载时释放资源等自己真正实现的环节。[Linux 平台驱动文档](https://docs.kernel.org/driver-api/driver-model/platform.html)
+| 层次 | 这个项目中的代码 | 具体职责 |
+| --- | --- | --- |
+| I2C 控制器层 | Silicon Labs SDK 的 `sl_si91x_i2c.c` | 操作 I2C 控制器、处理地址和发送；项目调用 `sl_i2c_driver_init()`、`sl_i2c_driver_send_data_blocking()`，没有从零实现这层。 |
+| OLED 设备层 | `oled.c`、`oled.h` | 按屏幕协议发送初始化命令；以 `0x00` 标识命令、`0x40` 标识显示数据；维护 128×64 像素的 1024 字节显存，并绘制像素、文字和图形。 |
+| 应用集成层 | `i2c_leader_example.c`、`app.c` | 配置 I2C0、7 位屏幕地址 `0x3D`，创建显示线程，按录音、唱歌、说话等状态选择画面并推进刷新。`i2c_leader_example.c` 保留了 Silicon Labs 示例文件的头部，应按自己的实际修改与集成范围描述贡献。 |
+
+工程选择了 I2C0 主机标准模式，未启用 DMA；发送使用 SDK 的阻塞接口。屏幕的 7 位地址是 `0x3D`，传给 SDK 时不要自己左移为 `0x7A`。设备层先设置列／页窗口，再把显存每 16 字节分成一包发送；`oled_flush_step()` 每次只发送一包，显示线程约每 10 ms 调用一次处理函数。**分步刷新不等于非阻塞 I2C：每一包的 SDK 发送仍是阻塞调用。**
+
+**可用的面试回答：** “我做过 SI91x 上的 I2C OLED 显示模块。底层 I2C 控制器使用 Silicon Labs SDK；我负责的设备与应用层包括屏幕初始化、命令和数据封装、显存绘制、分块刷新，以及把显示线程和录音、播放等状态连接起来。遇到通信问题时，我会先看控制器和屏幕初始化是否成功，再区分地址不应答与显示内容错误。” 其中“我负责”的范围按自己真实工作调整。协议基础见 [I2C](#i2c)。
 <!-- TOPIC:driver-work:END -->
+
+<a id="driver-oled-flow"></a>
+### 项目代码怎样运行？
+<!-- TOPIC:driver-oled-flow:START -->
+
+调用链可以记为：`音频／业务事件 → 请求切换画面 → 显示线程 → 画到显存 → 分块刷新 → SDK I2C 发送 → OLED`。下面是**提炼原工程逻辑的伪代码**，省略了初始化命令表、状态判断和错误处理细节，不能直接代替原文件编译：
+
+```c
+#define OLED_ADDR_7BIT 0x3D
+uint8_t framebuffer[128 * 64 / 8];       // 1024 字节：每个 bit 对应一个像素
+
+void display_thread(void) {
+    sdk_i2c_init(I2C0, STANDARD_MODE);   // 原工程调用 sl_i2c_driver_init()
+    oled_init(I2C0, OLED_ADDR_7BIT);      // 发送初始化命令，清屏
+
+    for (;;) {
+        if (scene_changed() && !oled_flush_is_busy()) {
+            draw_scene_to_framebuffer(); // 先改 RAM 中的图像，不会立刻上屏
+            oled_flush_begin();          // 设置列／页窗口，从显存开头准备刷新
+        }
+        if (oled_flush_is_busy()) {
+            oled_flush_step();           // 本轮只发最多 16 字节显示数据
+        }
+        osDelay(10);                     // 让其他线程也有机会运行
+    }
+}
+
+bool send_command(uint8_t cmd) {
+    uint8_t tx[] = {0x00, cmd};          // 0x00：后面是 OLED 命令
+    return sdk_i2c_send(I2C0, OLED_ADDR_7BIT, tx, sizeof(tx));
+}
+
+bool send_pixels(const uint8_t *pixels, size_t n) { // n <= 16
+    uint8_t tx[17] = {0x40};             // 0x40：后面是显存数据
+    copy_bytes(&tx[1], pixels, n);
+    return sdk_i2c_send(I2C0, OLED_ADDR_7BIT, tx, n + 1);
+}
+```
+
+真实代码中的 `oled_draw_pixel(x, y)` 把像素放在 `framebuffer[x + (y / 8) * 128]` 的第 `y % 8` 位；`oled_flush_begin()` 用 `0x21`、`0x22` 设置列和页范围，`oled_flush_step()` 再分包写入显存。以“打开显示”命令 `0xAF` 为例，总线上的一笔写事务可概括为 `START → 地址 0x3D + 写位 → ACK → 0x00 → ACK → 0xAF → ACK → STOP`。这里 `0x3D` 是 7 位地址；逻辑分析仪若显示地址字节，写方向通常显示为 `0x7A`。
+
+完整显存为 1024 字节，按 16 字节分块共需 64 包。显示线程约每 10 ms 推进一包，因此一次完整的运行时刷新仅等待间隔就约 640 ms，实际还要加上总线发送与调度时间；若面试官问“画面为什么更新慢”，这是可以从代码直接分析出的原因。
+<!-- TOPIC:driver-oled-flow:END -->
 
 <a id="driver-debug"></a>
 ### 驱动怎么调试？
 <!-- TOPIC:driver-debug:START -->
 
-**面试回答思路：** 按“现象 → 分层定位 → 找到原因 → 修复并复测”讲一个真实故障，尽量给出测量或日志证据。
+面试按“**现象 → 分层定位 → 原因 → 修改 → 复测**”讲自己实际遇到的一次故障。若暂时没有能确认的真实案例，可以说明自己的排查方法，但不要把下面的例子说成既成事实。
 
-例如 **I2C 屏幕不亮的排查示例**：先测供电、复位、接线和上拉电阻；再用逻辑分析仪看 START、地址、ACK、命令与数据字节是否符合预期；同时检查驱动接口返回值。若地址阶段无 ACK，优先核对 7 位地址、读写位及硬件连接；若每个字节都有 ACK 但仍不显示，再查初始化顺序、控制字节、页地址和显存数据。改动后重复上电和连续刷新测试，确认问题没有复发。这是排查方法示例，不代表已经发生在你的项目中。Linux 驱动还应检查匹配与 `probe` 是否执行、资源是否申请成功，并结合内核日志与[动态调试](https://docs.kernel.org/admin-guide/dynamic-debug-howto.html)定位。调试器本身无法连接的情况见[嵌入式调试接口排障](#debug-interface)。
+以“屏幕不亮”为**排查示例**：
+
+1. 查硬件：供电、复位、共地、SCL/SDA 接线和上拉电阻。
+2. 查控制器：读取 `sl_i2c_driver_init()`、FIFO 配置和 `oled_init()` 的结果。现有代码会输出这些阶段的成功或失败日志。
+3. 查总线：有条件时用逻辑分析仪看 START、`0x3D` 地址与 ACK。地址无 ACK 先查接线、供电、7 位地址和写位；有 ACK 但无显示，再查 `0x00`／`0x40` 控制字节、初始化命令、列／页窗口和显存内容。
+4. 查刷新状态：确认 `oled_flush_begin()` 成功、偏移量逐步增加、`oled_flush_is_busy()` 最后变为假；修复后重复上电、场景切换和连续刷新。
+
+**从代码审查能发现的两个风险，不能当作已经发生的故障：** `app.c` 在调用初始化后就把 `i2c_started` 设为真，若初始化失败，线程不会自动重试；`oled_flush_step()` 发送失败时返回 `false`，但忙碌标志没有在该函数中清除，处理函数可能反复进入失败路径。若现场确有“上电不亮”或“刷新卡住”，可针对这两条路径设置断点、记录具体 I2C 错误码，再决定是否增加重试、复位或状态恢复。当前 `oled.c` 只把 SDK 状态转成 `bool`，因此若要区分 NACK、总线错误与超时，应在返回前记录原始 `sl_i2c_status_t`。
+
+**可用的面试回答框架：** “我会先看屏幕供电与连线，再用初始化日志和 I2C 发送返回值判断故障在控制器、总线还是 OLED 命令／显存层；必要时核对波形和 ACK，最后复测上电与连续刷新。” 如果你确实排查过一次故障，再把真实现象、测到的证据、最终原因和修改结果补进去。调试器无法连接 MCU 属于另一个问题，见[嵌入式调试接口排障](#debug-interface)。
 <!-- TOPIC:driver-debug:END -->
 
 <a id="debug-interface"></a>
