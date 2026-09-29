@@ -749,7 +749,47 @@ struct teach {
 | `student` | `no`：0–3；`name`：4；填充：5；`sex`：6–7 | 0 字节 | **8 字节** |
 | `teach` | `no`：0；填充：1–3；`name`：4–7；`sex`：8–9 | 2 字节 | **12 字节** |
 
-成员要放在符合各自对齐要求的位置；结构体整体大小还要满足自身对齐要求，以便结构体数组中的每个元素正确对齐。**实际结果取决于平台 ABI、编译器选项和打包设置**，可用 `sizeof`、`_Alignof`（或 C++ 的 `alignof`）和 `offsetof` 验证。
+**如果再加一个 `double` 呢？** 假设把它放在两个结构体的末尾，且当前 ABI 中 `sizeof(double) == 8`、`_Alignof(double) == 8`：
+
+```c
+struct student_double {
+    int no;
+    char name;
+    short sex;
+    double score;
+};
+
+struct teach_double {
+    char no;
+    int name;
+    short sex;
+    double score;
+};
+```
+
+| 结构体 | 前三个成员之后 | `score` 前的填充 | `score` 位置 | 最终 `sizeof` |
+| --- | --- | --- | --- | --- |
+| `student_double` | `sex` 占 6–7；下一个空位是 8 | 0 字节 | 8–15 | **16 字节** |
+| `teach_double` | `sex` 占 8–9；下一个空位是 10 | 6 字节（10–15） | 16–23 | **24 字节** |
+
+计算方法是：**每个成员的起始偏移向上取整到该成员要求的对齐倍数；最后把结构体总大小补齐到结构体的对齐倍数。**在这个例子中，最大成员对齐要求是 8 字节，因此结构体本身也按 8 字节对齐，数组中的下一个结构体才能让其 `double` 继续正确对齐。[Arm AAPCS32 数据类型与复合类型布局](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
+
+**不要只凭 `double` 占 8 字节就认定它一定按 8 字节对齐。**如果另一个 ABI 规定 `double` 大小为 8 字节、对齐要求却只有 4 字节，那么 `teach_double.score` 可以从偏移 12 开始，占 12–19，整个结构体是 **20 字节**；`student_double` 在这两种假设下都是 16 字节。成员顺序、目标 ABI、编译器选项和打包设置都会影响布局。实际项目可用下面的代码测量：
+
+```c
+#include <stddef.h>
+#include <stdio.h>
+
+/* 接在上面的两个结构体定义之后 */
+int main(void) {
+    printf("double: size=%zu, align=%zu\n", sizeof(double), _Alignof(double));
+    printf("teach_double: score offset=%zu, size=%zu\n",
+           offsetof(struct teach_double, score), sizeof(struct teach_double));
+    return 0;
+}
+```
+
+`_Alignof` 是 C11 写法；C++ 可用 `alignof`。`offsetof` 可以核对成员偏移，`sizeof` 可以核对尾部填充；这些结果以实际编译目标为准。
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:struct-alignment:END -->
