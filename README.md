@@ -91,12 +91,12 @@ void draw_page(void) {             // 函数指令通常在 .text
 | **堆／动态分配区** | 运行时申请的内存 | 成功申请后至释放前；例：`malloc(128)` 返回的缓冲区 | 申请失败要检查；`free` 后不能继续使用原内存。 |
 | **栈** | 调用现场以及通常的局部自动变量 | 随函数调用变化；例：`page`、局部指针 `pixels` | 局部变量可能被放在寄存器；每个 RTOS 任务／Linux 线程有自己的栈。 |
 
-**别把“变量写在函数里”和“变量在栈上”画等号。**`frames` 是函数内的 `static` 变量，却具有静态存储期，函数返回后仍保留值；未初始化时通常在 `.bss`。`pixels` 是局部指针，指针本身通常在栈或寄存器里，所指向的 128 字节才来自动态分配器。Linux 的 `malloc` 实现也可能通过其他内存映射取得空间，不能把“堆”理解为所有动态分配必定落在一块连续区域。[Linux `malloc(3)`](https://man7.org/linux/man-pages/man3/malloc.3.html)
+**别把“变量写在函数里”和“变量在栈上”画等号。** `frames` 是函数内的 `static` 变量，却具有静态存储期，函数返回后仍保留值；未初始化时通常在 `.bss`。`pixels` 是局部指针，指针本身通常在栈或寄存器里，所指向的 128 字节才来自动态分配器。Linux 的 `malloc` 实现也可能通过其他内存映射取得空间，不能把“堆”理解为所有动态分配必定落在一块连续区域。[Linux `malloc(3)`](https://man7.org/linux/man-pages/man3/malloc.3.html)
 
 <a id="memory-startup"></a>
 ### MCU 启动时发生什么？
 
-以**从 Flash 启动的常见 STM32/Cortex-M 裸机工程**为例，CPU 上电复位后不会直接执行 `main()`：
+以**从 Flash 启动的常见 STM32/Cortex-M 裸机工程** 为例，CPU 上电复位后不会直接执行 `main()`：
 
 ```text
 上电 → 复位解除，CPU 使用启动时可用的时钟
@@ -133,12 +133,12 @@ Flash / ROM                           RAM
 ### 面试常见追问
 
 1. **`int x = 0` 一定在 `.data` 吗？** 若它是全局变量或静态变量，通常可放在 `.bss`；若它是普通局部变量，则具有自动存储期，不能只凭初值判断为 `.data`。
-2. **`static int n` 写在函数里，为什么不是栈变量？**`static` 让它在整个程序运行期间存在；它只初始化一次、跨调用保留值。参见下方 [`static` 小节](#static)。
+2. **`static int n` 写在函数里，为什么不是栈变量？** `static` 让它在整个程序运行期间存在；它只初始化一次、跨调用保留值。参见下方 [`static` 小节](#static)。
 3. **`malloc` 得到的内存和指针变量各在哪里？** 分配得到的缓冲区属于动态分配；局部指针本身通常在栈或寄存器。参见 [`malloc` 与 `free`](#malloc-free)。
 4. **栈满或堆不够会怎样？** 动态分配失败通常以 `NULL` 表示；栈溢出的表现依平台及保护机制而异，在 MCU 上可能破坏其他内存。FreeRTOS 可通过[任务栈高水位](#freertos-stack-check)估算历史最小余量。
 5. **这六块在 Linux 中也按图摆放吗？** 不一定。Linux 进程使用虚拟地址空间，还有共享库、内存映射等区域；可查看 `/proc/<pid>/maps` 观察映射，不能把上面的 MCU 示意图当成通用地址表。[Linux `proc_pid_maps(5)`](https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html)
 
-**一句话复述：**`.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
+**一句话复述：** `.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
 <!-- TOPIC:memory-layout:END -->
 
 <a id="cortex-m-registers"></a>
@@ -189,14 +189,14 @@ Flash / ROM                           RAM
 
 `APSR`、`IPSR`、`EPSR` 是 `xPSR` 的不同部分，不要误认为三个互不相关的数据寄存器。Cortex-M 的 **优先级数值越小，实际优先级越高**。部分 Cortex-M4/M7 带 FPU，还存在 `S0`～`S31` 等浮点寄存器；是否存在、异常时是否保存浮点现场，要看具体内核和配置。[Arm 状态寄存器与异常屏蔽说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
 
-**面试速记：**`R0`～`R12` 处理数据，`SP` 管栈，`LR` 管返回，`PC` 管执行位置，`xPSR` 记录状态，`CONTROL` 选运行方式，三个 MASK 寄存器影响异常屏蔽。`HFSR`、`CFSR`、`BFAR` 等是故障诊断用的 **系统控制寄存器**，放在下面的排障流程里理解。
+**面试速记：** `R0`～`R12` 处理数据，`SP` 管栈，`LR` 管返回，`PC` 管执行位置，`xPSR` 记录状态，`CONTROL` 选运行方式，三个 MASK 寄存器影响异常屏蔽。`HFSR`、`CFSR`、`BFAR` 等是故障诊断用的 **系统控制寄存器**，放在下面的排障流程里理解。
 <!-- TOPIC:cortex-m-registers:END -->
 
 <a id="interrupts"></a>
 ## 中断与中断嵌套
 <!-- TOPIC:interrupts:START -->
 
-以下以常见 **Cortex-M 单片机**为例。中断让 CPU 暂停当前执行路径，优先处理外设或系统事件，处理完再恢复；有 FreeRTOS 时，中断退出后也可能先调度另一个就绪任务。**中断优先级和 FreeRTOS 任务优先级是两套不同的编号。**
+以下以常见 **Cortex-M 单片机** 为例。中断让 CPU 暂停当前执行路径，优先处理外设或系统事件，处理完再恢复；有 FreeRTOS 时，中断退出后也可能先调度另一个就绪任务。**中断优先级和 FreeRTOS 任务优先级是两套不同的编号。**
 
 <a id="interrupt-lifecycle"></a>
 ### 一次中断从触发到返回
@@ -297,13 +297,13 @@ void RxTask(void *arg) {
 ## HardFault 定位
 <!-- TOPIC:hardfault:START -->
 
-**面试问题：程序偶发跑进 HardFault，加 `printf` 后 Bug 不复现，手头只有 Keil IDE，怎么定位？**`printf` 可能改变执行时序、栈占用和内存布局；故障暂时消失不等于已经修复。思路是 **尽量保持原程序运行，故障发生时停住并保存现场，再从症状追到根因**。
+**面试问题：程序偶发跑进 HardFault，加 `printf` 后 Bug 不复现，手头只有 Keil IDE，怎么定位？** `printf` 可能改变执行时序、栈占用和内存布局；故障暂时消失不等于已经修复。思路是 **尽量保持原程序运行，故障发生时停住并保存现场，再从症状追到根因**。
 
 <a id="hardfault-steps"></a>
 ### 在 Keil 中按什么顺序查？
 
 1. **停在现场。** 用原来的固件运行，在 `HardFault_Handler` 入口设断点；故障发生后先记录寄存器和栈，不急着复位，也不加大量打印。Keil 的 **Peripherals → Core Peripherals → Fault Reports** 可以查看故障状态；不支持该窗口时，也可在寄存器或内存窗口读相应寄存器。[Keil 故障调试说明](https://www.keil.com/appnotes/files/apnt209.pdf)
-2. **先看故障类型。**`HFSR.FORCED=1` 表示其他故障升级为 HardFault，要继续看 `CFSR`。`CFSR` 汇总内存管理、总线和用法故障；只有 `BFARVALID` 或 `MMARVALID` 置位时，相应的 `BFAR` 或 `MMFAR` 才能当故障地址使用。[Arm 故障寄存器定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+2. **先看故障类型。** `HFSR.FORCED=1` 表示其他故障升级为 HardFault，要继续看 `CFSR`。`CFSR` 汇总内存管理、总线和用法故障；只有 `BFARVALID` 或 `MMARVALID` 置位时，相应的 `BFAR` 或 `MMFAR` 才能当故障地址使用。[Arm 故障寄存器定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
 3. **选对异常前使用的栈。** 处理函数中的 `LR` 是 `EXC_RETURN`：其 bit2 为 `0`，查看 `MSP`；为 `1`，查看 `PSP`。常见基本返回值 `0xFFFFFFF9` 对应 MSP，`0xFFFFFFFD` 对应 PSP。Keil 的 Registers、Memory 窗口可查看这些值。[Keil 异常栈帧示例](https://www.keil.com/appnotes/files/apnt209.pdf)
 4. **找保存的 PC 和操作数。** 若确认是 **有效的基本异常栈帧**，从选中的栈指针指向处依次为 `R0、R1、R2、R3、R12、原 LR、PC、xPSR`；保存的 `PC` 在 `SP + 24` 字节处。将这个 PC 放到 Disassembly 窗口，结合 `.axf` 的源码定位、寄存器值与调用关系分析。处理函数里当前显示的 PC 指向处理函数本身，不能拿它当异常前的执行位置。Keil 的 **Call Stack + Locals → Show Caller Code** 也可辅助定位。[Arm 基本异常栈帧](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)；[Keil 窗口操作](https://www.keil.com/appnotes/files/apnt209.pdf)
 5. **追查上游并验证。** 若指令只是使用了已损坏的指针，出错位置可能是 **更早写坏指针** 的代码。检查数组越界、任务或中断栈溢出、函数指针、并发访问与初始化时序；对可疑变量设置硬件数据断点，观察是谁改写了它。修复后用 **原来的时序和负载** 复现验证。
@@ -333,12 +333,12 @@ EXC_RETURN = 0xFFFFFFFD   → 异常前使用 PSP
 <a id="hardfault-pitfalls"></a>
 ### 容易误判的情况
 
-- **保存的 PC 不一定就是肇事指令。**`CFSR` 若显示 `IMPRECISERR`，总线错误可能延后才报告，保存的 PC 与最初引发错误的指令无关；此时应扩大排查范围，必要时用芯片和调试器支持的指令追踪。[Arm 对精确与非精确总线错误的定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
+- **保存的 PC 不一定就是肇事指令。** `CFSR` 若显示 `IMPRECISERR`，总线错误可能延后才报告，保存的 PC 与最初引发错误的指令无关；此时应扩大排查范围，必要时用芯片和调试器支持的指令追踪。[Arm 对精确与非精确总线错误的定义](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
 - **异常栈帧未必可按固定偏移读。** 带 FPU 的扩展帧、压栈本身出错、栈越界或已经被覆盖时，要先核对现场是否完整；不能机械读取 `SP + 24`。[Arm 异常栈帧说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)
 - **不要只看调用栈最上面。** 它往往只是 `HardFault_Handler`；需要结合异常前的 PC、故障状态、地址和寄存器操作数。若调试器的调用栈不完整，就直接看 Memory 和 Disassembly 窗口。
 - **内核型号要先确认。** 上面的 `CFSR/HFSR` 及示例主要针对 Cortex-M3/M4/M7；Cortex-M0/M0+ 可用的故障状态寄存器不同，不能照搬。
 
-**面试简答：**“我会先保持原固件，在 HardFault 入口断住，查看 `HFSR/CFSR`；用 `EXC_RETURN` 判断异常前的现场在 MSP 还是 PSP，从有效栈帧里取出保存的 PC，再结合反汇编、故障地址和操作数定位。找到触发故障的指令后，我会追查指针何时被改坏或栈何时溢出，必要时用硬件数据断点，而不是靠增加 `printf` 碰运气。”
+**面试简答：** “我会先保持原固件，在 HardFault 入口断住，查看 `HFSR/CFSR`；用 `EXC_RETURN` 判断异常前的现场在 MSP 还是 PSP，从有效栈帧里取出保存的 PC，再结合反汇编、故障地址和操作数定位。找到触发故障的指令后，我会追查指针何时被改坏或栈何时溢出，必要时用硬件数据断点，而不是靠增加 `printf` 碰运气。”
 <!-- TOPIC:hardfault:END -->
 
 <a id="cache-dma"></a>
@@ -382,7 +382,7 @@ DMA 让外设与内存交换数据时无需 CPU 逐字节搬运；CPU 通常负�
 
 **不是所有项目都要手工清理 Cache。** 有的 MCU 没有启用 D-Cache；有的平台由硬件保证 CPU 与 DMA 一致；若 [I2C 显示屏](#i2c)由 CPU 直接写外设寄存器、没有使用 DMA 缓冲区，也不会按上述方式出现“DMA 读到旧缓冲区”的问题。在 Linux 驱动中应使用 DMA 映射与同步 API，让平台实现处理缓存一致性；裸机或 RTOS 下则遵循芯片手册和驱动要求。[Arm Cortex-M7 缓存维护操作](https://documentation-service.arm.com/static/61efd6602dd99944d051417b?token=)；[Linux DMA API 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
 
-**与 [`volatile`](#volatile) 区分：**`volatile` 约束编译器对对象访问的优化，不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
+**与 [`volatile`](#volatile) 区分：** `volatile` 约束编译器对对象访问的优化，不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
 <!-- TOPIC:cache-dma:END -->
 
 <a id="i2c"></a>
@@ -483,7 +483,7 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 
 常见流程是：**配置模式、位序和时钟频率 → 选中设备（CS 有效）→ 产生时钟并逐位交换数据 → 等最后一位传完 → 释放 CS**。CS 有效前后的建立时间、保持时间，以及命令和数据之间是否允许释放 CS，都要看器件手册。多个设备可以共享时钟和数据线，但通常各有片选；未被选中的设备一般不应驱动共享的 MISO。
 
-**CPOL 决定时钟空闲电平，CPHA 决定在前沿还是后沿采样。**“前沿”是从空闲电平离开的第一个边沿，可能是上升沿，也可能是下降沿。
+**CPOL 决定时钟空闲电平，CPHA 决定在前沿还是后沿采样。** “前沿”是从空闲电平离开的第一个边沿，可能是上升沿，也可能是下降沿。
 
 | 模式 | CPOL | CPHA | SCLK 空闲 | 采样边沿 | 改变下一位的边沿 |
 | --- | ---: | ---: | --- | --- | --- |
@@ -528,7 +528,7 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 ## UART 串口通信
 <!-- TOPIC:uart:START -->
 
-UART 是常见的**异步串行收发**方式。典型连接是设备 A 的 TX 接设备 B 的 RX、A 的 RX 接 B 的 TX，并共地；双方预先约定波特率、数据位、校验位和停止位。与 [I2C](#i2c) 的共享总线寻址、[SPI](#spi) 的主控时钟和片选不同，常见 UART 链路没有共享时钟线，也没有统一的设备地址或每字节 ACK。它只负责逐字节收发，**业务命令的边界和格式由上层协议规定**。
+UART 是常见的**异步串行收发** 方式。典型连接是设备 A 的 TX 接设备 B 的 RX、A 的 RX 接 B 的 TX，并共地；双方预先约定波特率、数据位、校验位和停止位。与 [I2C](#i2c) 的共享总线寻址、[SPI](#spi) 的主控时钟和片选不同，常见 UART 链路没有共享时钟线，也没有统一的设备地址或每字节 ACK。它只负责逐字节收发，**业务命令的边界和格式由上层协议规定**。
 
 <a id="uart-frame"></a>
 ### 一字节时序与 8N1
@@ -551,7 +551,7 @@ UART 是常见的**异步串行收发**方式。典型连接是设备 A 的 TX �
 | 接收中断 | 字节到来就及时处理 | 中断中尽量只取数据、放入缓冲区并通知任务，不做耗时解析。 |
 | DMA | 持续或较大量的数据 | 管理缓冲区写入位置、回绕及覆盖；核对半满、满和空闲事件。 |
 
-**UART 硬件的起始位/停止位只界定一个字符，不界定一条多字节业务消息。**例如设备协议可定义 `[帧头][长度][命令/数据][CRC]`；接收方逐字节状态机依次找帧头、读长度、收够数据、校验后交给业务任务。长度必须限幅；半帧要保留状态，超时或错误时要重新同步。帧头若也允许出现在负载中，使用长度字段后不应把负载里的同值字节误认成新帧头；若协议用结束符定界，则要考虑转义。[Microchip UART 命令帧示例](https://onlinedocs.microchip.com/oxy/GUID-58904FDA-338A-488F-A88D-766D29B27E37-en-US-1/GUID-EF0E0992-17AA-46DD-85CB-826FA2545D10.html)
+**UART 硬件的起始位/停止位只界定一个字符，不界定一条多字节业务消息。** 例如设备协议可定义 `[帧头][长度][命令/数据][CRC]`；接收方逐字节状态机依次找帧头、读长度、收够数据、校验后交给业务任务。长度必须限幅；半帧要保留状态，超时或错误时要重新同步。帧头若也允许出现在负载中，使用长度字段后不应把负载里的同值字节误认成新帧头；若协议用结束符定界，则要考虑转义。[Microchip UART 命令帧示例](https://onlinedocs.microchip.com/oxy/GUID-58904FDA-338A-488F-A88D-766D29B27E37-en-US-1/GUID-EF0E0992-17AA-46DD-85CB-826FA2545D10.html)
 
 STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软件处理**当前已收到的字节**；空闲只表示出现了时间间隔，**不能脱离协议就认定是一帧结束**。DMA 回调给出的长度还要按所用 HAL 版本和接收模式解释。[ST UART Receive-to-Idle 文档](https://dev.st.com/stm32cube-docs/stm32c5xx-hal-drivers/2.0.0/en/docs/drivers/hal_drivers/uart/api/hal_uart_exported_functions.html)
 
@@ -566,22 +566,22 @@ STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软
 <a id="uart-questions"></a>
 ### 面试常见问题
 
-1. **UART 为什么不需要时钟线？**双方约定波特率，接收方利用起始位定位后续数据位的采样时机；因此时钟误差不能过大。
-2. **UART 是全双工吗？**典型 TX/RX 独立的连接可同时收发；具体能力仍取决于芯片、引脚和外部线路模式。
-3. **UART 与 USART 有什么区别？**USART 常表示外设还能支持同步工作方式；具体支持哪些模式，以目标芯片手册为准。
-4. **奇偶校验能替代 CRC 吗？**不能。奇偶校验只增加一个字符级校验位，可检测某些位错误，但不能保证发现所有错误；多字节业务帧按协议另做 CRC 或其他校验。
-5. **为什么发送缓冲区空了还不能立刻关闭发送器？**“可以再写下一字节”和“最后一位已从引脚移出”是两个不同状态。控制 RS-485 方向脚时，应等发送完成标志，而不是只看缓冲区空。[Microchip 发送标志说明](https://onlinedocs.microchip.com/oxy/GUID-0EC909F9-8FB7-46B2-BF4B-05290662B5C3-en-US-12.1.1/GUID-8B7DDFC1-10E0-447C-9276-A5BEE9BABDD3.html)
-6. **RTS/CTS 用来做什么？**硬件流控让接收方在缓冲区接近满时提示发送方暂缓，避免处理速度跟不上而丢数据；是否可用取决于双方硬件和配置。[Microchip 硬件流控说明](https://onlinedocs.microchip.com/oxy/GUID-167CA20A-2C0F-4CBC-A693-9FD032B9B193-en-US-1/GUID-C8B83E54-0F62-4205-98DD-B1560AACDBB4.html)
-7. **UART 传输距离能给一个固定数字吗？**不能。UART 规定收发格式；可用距离取决于电气接口、线缆、波特率、干扰、接地等条件，不能把 MCU 引脚直连和 RS-485 收发器的距离混为一谈。
+1. **UART 为什么不需要时钟线？** 双方约定波特率，接收方利用起始位定位后续数据位的采样时机；因此时钟误差不能过大。
+2. **UART 是全双工吗？** 典型 TX/RX 独立的连接可同时收发；具体能力仍取决于芯片、引脚和外部线路模式。
+3. **UART 与 USART 有什么区别？** USART 常表示外设还能支持同步工作方式；具体支持哪些模式，以目标芯片手册为准。
+4. **奇偶校验能替代 CRC 吗？** 不能。奇偶校验只增加一个字符级校验位，可检测某些位错误，但不能保证发现所有错误；多字节业务帧按协议另做 CRC 或其他校验。
+5. **为什么发送缓冲区空了还不能立刻关闭发送器？** “可以再写下一字节”和“最后一位已从引脚移出”是两个不同状态。控制 RS-485 方向脚时，应等发送完成标志，而不是只看缓冲区空。[Microchip 发送标志说明](https://onlinedocs.microchip.com/oxy/GUID-0EC909F9-8FB7-46B2-BF4B-05290662B5C3-en-US-12.1.1/GUID-8B7DDFC1-10E0-447C-9276-A5BEE9BABDD3.html)
+6. **RTS/CTS 用来做什么？** 硬件流控让接收方在缓冲区接近满时提示发送方暂缓，避免处理速度跟不上而丢数据；是否可用取决于双方硬件和配置。[Microchip 硬件流控说明](https://onlinedocs.microchip.com/oxy/GUID-167CA20A-2C0F-4CBC-A693-9FD032B9B193-en-US-1/GUID-C8B83E54-0F62-4205-98DD-B1560AACDBB4.html)
+7. **UART 传输距离能给一个固定数字吗？** 不能。UART 规定收发格式；可用距离取决于电气接口、线缆、波特率、干扰、接地等条件，不能把 MCU 引脚直连和 RS-485 收发器的距离混为一谈。
 
-**面试概括：**先讲 8N1 的字节时序，再讲轮询/中断/DMA 如何接收，随后说明业务帧必须由上层协议定义，最后按电气、配置、错误标志、协议四层排查故障。
+**面试概括：** 先讲 8N1 的字节时序，再讲轮询/中断/DMA 如何接收，随后说明业务帧必须由上层协议定义，最后按电气、配置、错误标志、协议四层排查故障。
 <!-- TOPIC:uart:END -->
 
 <a id="crc"></a>
 ## CRC 校验
 <!-- TOPIC:crc:START -->
 
-**CRC（循环冗余校验）用来发现数据在传输或存储时是否发生变化。**发送方按约定算法计算校验值，把它与数据一起发送；接收方对收到的数据重新计算，再与收到的校验值比较。不相同就判为校验失败；相同表示**通过这次检错**，并不保证数据绝对正确。CRC 本身不能修复数据，也不能代替加密或身份认证。
+**CRC（循环冗余校验）用来发现数据在传输或存储时是否发生变化。** 发送方按约定算法计算校验值，把它与数据一起发送；接收方对收到的数据重新计算，再与收到的校验值比较。不相同就判为校验失败；相同表示**通过这次检错**，并不保证数据绝对正确。CRC 本身不能修复数据，也不能代替加密或身份认证。
 
 <a id="crc-width"></a>
 ### CRC8、CRC16、CRC32 有什么区别？
@@ -592,9 +592,9 @@ STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软
 | CRC16 | 16 位 | 2 字节 | Modbus 串行通信等 |
 | CRC32 | 32 位 | 4 字节 | 较大数据块、文件或固件数据的检错 |
 
-**数字表示校验值长度，不表示原始数据长度。**1 字节的数据也能按协议使用 CRC16；多个字节的数据也能使用 CRC8。校验值越长，附加开销越大；实际检错能力还取决于**多项式、报文长度和错误模式**，不能只看 8、16、32。[SMBus 规范](https://smbus.org/specs/SMBus_3_3_1_20241020.pdf)；[Modbus 串行规范](https://www.modbus.org/modbus-specifications)；[CRC 多项式研究](https://users.ece.cmu.edu/~koopman/roses/dsn04/koopman04_crc_poly_embedded.pdf)
+**数字表示校验值长度，不表示原始数据长度。** 1 字节的数据也能按协议使用 CRC16；多个字节的数据也能使用 CRC8。校验值越长，附加开销越大；实际检错能力还取决于**多项式、报文长度和错误模式**，不能只看 8、16、32。[SMBus 规范](https://smbus.org/specs/SMBus_3_3_1_20241020.pdf)；[Modbus 串行规范](https://www.modbus.org/modbus-specifications)；[CRC 多项式研究](https://users.ece.cmu.edu/~koopman/roses/dsn04/koopman04_crc_poly_embedded.pdf)
 
-**只说“使用 CRC16”还不足以让双方算出相同结果。**通信双方至少要核对校验宽度、生成多项式、初始值、输入/输出是否按位反射、最终异或值、参与计算的字节范围；多字节 CRC 还要核对发送时的字节顺序。例如 CRC32 与 CRC32C 都是 32 位，但使用不同多项式，不能直接互换。[Linux 内核 CRC 接口文档](https://www.kernel.org/doc/html/next/core-api/kernel-api.html)
+**只说“使用 CRC16”还不足以让双方算出相同结果。** 通信双方至少要核对校验宽度、生成多项式、初始值、输入/输出是否按位反射、最终异或值、参与计算的字节范围；多字节 CRC 还要核对发送时的字节顺序。例如 CRC32 与 CRC32C 都是 32 位，但使用不同多项式，不能直接互换。[Linux 内核 CRC 接口文档](https://www.kernel.org/doc/html/next/core-api/kernel-api.html)
 
 <a id="crc-process"></a>
 ### 一次校验怎么完成？
@@ -613,16 +613,16 @@ STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软
 <a id="crc-device"></a>
 ### MCU 写了 CRC，外设怎么知道？
 
-**外设不会因为 MCU 写了一个 CRC 函数就自动配合。**先看器件数据手册或通信协议：若外设支持 CRC，厂商已经在外设硬件或固件中实现了规则，MCU 按相同规则收发；若外设是另一块可编程 MCU，两端程序需要约定一致；若外设根本不发送或检查 CRC，MCU 单方面附加一个 CRC 字节也无法实现双方的通信校验。I2C 的 ACK 只表示该字节被应答，不等于整条业务数据通过 CRC 检查。
+**外设不会因为 MCU 写了一个 CRC 函数就自动配合。** 先看器件数据手册或通信协议：若外设支持 CRC，厂商已经在外设硬件或固件中实现了规则，MCU 按相同规则收发；若外设是另一块可编程 MCU，两端程序需要约定一致；若外设根本不发送或检查 CRC，MCU 单方面附加一个 CRC 字节也无法实现双方的通信校验。I2C 的 ACK 只表示该字节被应答，不等于整条业务数据通过 CRC 检查。
 
-**传感器例子：**SHT3x 温湿度传感器在每两个测量数据字节后发送一个 CRC8 字节，其说明书规定多项式 `0x31`、初始值 `0xFF`。MCU 取前两个数据字节按该参数计算，与第三个字节比较；温度和湿度各自的两字节数据分别校验。不能擅自改用前面演示的 `0x07` 参数。[Sensirion SHT3x 数据手册](https://sensirion.com/media/documents/213E6A3B/63A5A569/Datasheet_SHT3x_DIS.pdf)
+**传感器例子：** SHT3x 温湿度传感器在每两个测量数据字节后发送一个 CRC8 字节，其说明书规定多项式 `0x31`、初始值 `0xFF`。MCU 取前两个数据字节按该参数计算，与第三个字节比较；温度和湿度各自的两字节数据分别校验。不能擅自改用前面演示的 `0x07` 参数。[Sensirion SHT3x 数据手册](https://sensirion.com/media/documents/213E6A3B/63A5A569/Datasheet_SHT3x_DIS.pdf)
 
-**本地存储例子：**把参数及其 CRC 一起写入 MCU 的 Flash，下次读取时由同一台 MCU 重算并比较，不需要外设参与。但 CRC 只能帮助发现数据损坏；要处理断电期间写入不完整，还需另外设计有效标记、版本或备份等更新策略。参见 [Flash 参数持久化](#flash-parameters)。
+**本地存储例子：** 把参数及其 CRC 一起写入 MCU 的 Flash，下次读取时由同一台 MCU 重算并比较，不需要外设参与。但 CRC 只能帮助发现数据损坏；要处理断电期间写入不完整，还需另外设计有效标记、版本或备份等更新策略。参见 [Flash 参数持久化](#flash-parameters)。
 
 <a id="crc-example"></a>
 ### C 语言 CRC8 示例
 
-下面是**高位优先、不反射、最终不异或**的逐位实现。`poly`、`init` 由具体协议提供；它不代表所有名为“CRC8”的算法。
+下面是**高位优先、不反射、最终不异或** 的逐位实现。`poly`、`init` 由具体协议提供；它不代表所有名为“CRC8”的算法。
 
 ```c
 #include <stddef.h>
@@ -663,7 +663,7 @@ uint8_t crc8_msb(const uint8_t *data, size_t len,
 <a id="bootloader-ota-flow"></a>
 ### 双分区升级：从下载到确认
 
-下面用**示意布局**说明 A/B 两份应用固件的升级；实际地址、分区数量，以及“直接从 B 运行”还是“将 B 交换/复制到运行区”，由硬件和 Bootloader 方案决定。[MCUboot 升级策略](https://docs.mcuboot.com/design.html)
+下面用**示意布局** 说明 A/B 两份应用固件的升级；实际地址、分区数量，以及“直接从 B 运行”还是“将 B 交换/复制到运行区”，由硬件和 Bootloader 方案决定。[MCUboot 升级策略](https://docs.mcuboot.com/design.html)
 
 ```text
 Flash：│ Bootloader │ 应用 A：当前可用 │ 应用 B：下载候选 │ 升级状态 │
@@ -675,10 +675,10 @@ Flash：│ Bootloader │ 应用 A：当前可用 │ 应用 B：下载候选 �
                                   新版本自检通过后标记“确认可用”
 ```
 
-1. **下载：**运行中的 A 把新固件分块写入 B，记录写入进度，避免越过分区边界；下载未完成时不要将 B 标记为可启动。
-2. **验证：**核对镜像格式、长度、目标型号/硬件版本、版本策略及完整性。CRC 或哈希可发现数据变化；若要确认固件确由可信发布者签发，还需使用受信任密钥验证**数字签名**，单靠 CRC 不具备身份认证能力。[MCUboot 镜像校验与签名](https://docs.mcuboot.com/design.html)
-3. **试启动：**确认 B 满足启动条件后，可靠地写入“待试运行”状态并重启。Bootloader 再次验证候选镜像，按方案切换或搬运镜像并启动新版本。
-4. **确认或回滚：**新版本完成关键自检后将自己标记为“确认可用”；若它崩溃、反复重启或一直未确认，下一次启动回到旧版本。这里的回滚必须在设计与配置中实现，不能假设所有 Bootloader 都自动支持。[MCUboot 测试升级与回滚](https://docs.mcuboot.com/design.html)；[ESP-IDF 回滚流程](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html)
+1. **下载：** 运行中的 A 把新固件分块写入 B，记录写入进度，避免越过分区边界；下载未完成时不要将 B 标记为可启动。
+2. **验证：** 核对镜像格式、长度、目标型号/硬件版本、版本策略及完整性。CRC 或哈希可发现数据变化；若要确认固件确由可信发布者签发，还需使用受信任密钥验证**数字签名**，单靠 CRC 不具备身份认证能力。[MCUboot 镜像校验与签名](https://docs.mcuboot.com/design.html)
+3. **试启动：** 确认 B 满足启动条件后，可靠地写入“待试运行”状态并重启。Bootloader 再次验证候选镜像，按方案切换或搬运镜像并启动新版本。
+4. **确认或回滚：** 新版本完成关键自检后将自己标记为“确认可用”；若它崩溃、反复重启或一直未确认，下一次启动回到旧版本。这里的回滚必须在设计与配置中实现，不能假设所有 Bootloader 都自动支持。[MCUboot 测试升级与回滚](https://docs.mcuboot.com/design.html)；[ESP-IDF 回滚流程](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html)
 
 例如显示设备从 A 版升级到 B 版，B 虽能进入 `main()`，但显示任务一直报错。只检查“程序启动了”就确认升级，会让故障固化；把显示初始化、关键配置读取和必要的通信自检纳入确认条件，才有机会在下一次重启时回到 A。
 
@@ -697,13 +697,13 @@ Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路�
 <a id="bootloader-ota-questions"></a>
 ### 面试常见问题
 
-1. **OTA 和 Bootloader 是一回事吗？**不是。OTA 描述获取与安装新固件的升级方式；Bootloader 是启动阶段执行的程序，负责按设计选择和启动镜像。
-2. **为什么不能直接覆盖正在运行的固件？**写入中断电会使唯一镜像不完整；执行 Flash 与写 Flash 还可能受芯片限制。A/B 或暂存方案用于保留恢复路径，但有额外 Flash 成本。
-3. **CRC 校验通过就说明固件可信吗？**不能。CRC 主要检查数据是否意外损坏；防止别人伪造镜像需要验证数字签名及可信公钥。
-4. **新固件能启动，为什么还要应用确认？**能跳到入口不等于业务正常。确认前进行关键自检；未确认时让下一次启动回滚。
-5. **升级到一半断电怎么办？**先区分断在镜像写入、状态写入还是首次试启动；保留旧镜像，并让每个阶段的持久状态在重启后可识别和恢复。
+1. **OTA 和 Bootloader 是一回事吗？** 不是。OTA 描述获取与安装新固件的升级方式；Bootloader 是启动阶段执行的程序，负责按设计选择和启动镜像。
+2. **为什么不能直接覆盖正在运行的固件？** 写入中断电会使唯一镜像不完整；执行 Flash 与写 Flash 还可能受芯片限制。A/B 或暂存方案用于保留恢复路径，但有额外 Flash 成本。
+3. **CRC 校验通过就说明固件可信吗？** 不能。CRC 主要检查数据是否意外损坏；防止别人伪造镜像需要验证数字签名及可信公钥。
+4. **新固件能启动，为什么还要应用确认？** 能跳到入口不等于业务正常。确认前进行关键自检；未确认时让下一次启动回滚。
+5. **升级到一半断电怎么办？** 先区分断在镜像写入、状态写入还是首次试启动；保留旧镜像，并让每个阶段的持久状态在重启后可识别和恢复。
 
-**面试简答：**“应用下载新固件到备用区，校验格式、版本、完整性及需要的签名；Bootloader 在重启后试启动新版本。新版本自检成功才确认，否则按回滚规则启动旧版本。重点是断电后仍能确定有效镜像，且不能把 CRC 当作固件来源认证。”
+**面试简答：** “应用下载新固件到备用区，校验格式、版本、完整性及需要的签名；Bootloader 在重启后试启动新版本。新版本自检成功才确认，否则按回滚规则启动旧版本。重点是断电后仍能确定有效镜像，且不能把 CRC 当作固件来源认证。”
 <!-- TOPIC:bootloader-ota:END -->
 
 <a id="smartcard-internship"></a>
@@ -759,7 +759,7 @@ int main(void) {
 
 **追问：不加 `volatile` 会怎样？加锁后变量为什么仍可能在寄存器里？** 对硬件寄存器轮询而言，不加 `volatile` 可能使编译器省略重复读取，看不到硬件更新。锁并非“禁止使用寄存器”：CPU 仍会把值读入寄存器运算；互斥锁负责控制并发访问和建立线程间的内存同步。所有线程都正确使用同一把锁保护普通共享变量时，通常无须再加 `volatile`。
 
-**边界：**`volatile` 不保证原子性或线程同步，不能让 `count++` 自动安全。多线程共享数据应使用原子类型或同步机制；中断与主程序之间还要核对目标平台的访问宽度、原子性与必要的临界区。[GCC 对 `volatile` 的说明](https://gcc.gnu.org/onlinedocs/gcc/Volatiles.html)；[POSIX 对互斥锁内存同步的规定](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap04.html)。
+**边界：** `volatile` 不保证原子性或线程同步，不能让 `count++` 自动安全。多线程共享数据应使用原子类型或同步机制；中断与主程序之间还要核对目标平台的访问宽度、原子性与必要的临界区。[GCC 对 `volatile` 的说明](https://gcc.gnu.org/onlinedocs/gcc/Volatiles.html)；[POSIX 对互斥锁内存同步的规定](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap04.html)。
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:volatile:END -->
@@ -852,9 +852,9 @@ struct teach_double {
 | `student_double` | `sex` 占 6–7；下一个空位是 8 | 0 字节 | 8–15 | **16 字节** |
 | `teach_double` | `sex` 占 8–9；下一个空位是 10 | 6 字节（10–15） | 16–23 | **24 字节** |
 
-计算方法是：**每个成员的起始偏移向上取整到该成员要求的对齐倍数；最后把结构体总大小补齐到结构体的对齐倍数。**在这个例子中，最大成员对齐要求是 8 字节，因此结构体本身也按 8 字节对齐，数组中的下一个结构体才能让其 `double` 继续正确对齐。[Arm AAPCS32 数据类型与复合类型布局](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
+计算方法是：**每个成员的起始偏移向上取整到该成员要求的对齐倍数；最后把结构体总大小补齐到结构体的对齐倍数。** 在这个例子中，最大成员对齐要求是 8 字节，因此结构体本身也按 8 字节对齐，数组中的下一个结构体才能让其 `double` 继续正确对齐。[Arm AAPCS32 数据类型与复合类型布局](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
 
-**不要只凭 `double` 占 8 字节就认定它一定按 8 字节对齐。**如果另一个 ABI 规定 `double` 大小为 8 字节、对齐要求却只有 4 字节，那么 `teach_double.score` 可以从偏移 12 开始，占 12–19，整个结构体是 **20 字节**；`student_double` 在这两种假设下都是 16 字节。成员顺序、目标 ABI、编译器选项和打包设置都会影响布局。实际项目可用下面的代码测量：
+**不要只凭 `double` 占 8 字节就认定它一定按 8 字节对齐。** 如果另一个 ABI 规定 `double` 大小为 8 字节、对齐要求却只有 4 字节，那么 `teach_double.score` 可以从偏移 12 开始，占 12–19，整个结构体是 **20 字节**；`student_double` 在这两种假设下都是 16 字节。成员顺序、目标 ABI、编译器选项和打包设置都会影响布局。实际项目可用下面的代码测量：
 
 ```c
 #include <stddef.h>
@@ -931,7 +931,7 @@ void array_example(void) {
 
 在 C 语言中，**越界访问是未定义行为**：越界读可能得到无关数据或触发异常；越界写可能破坏相邻对象、指针或栈上的调用现场。程序也可能暂时看起来正常，直到稍后才发生 HardFault。此时异常现场显示的是“在哪里撞墙”，还应追查更早的越界写入；参见 [HardFault 定位](#hardfault)。编译器也可以基于“合法程序不会越界”的假设优化代码，不能依赖某次运行的表现。
 
-**字符串容易差一个字节：**`char buf[8]` 若用作 C 字符串，最多容纳 7 个普通字符和末尾的 `\0`；8 个普通字符加终止符至少需要 9 字节。处理外部输入时同时检查**目标缓冲区容量和实际写入长度**，循环条件用 `i < 元素个数`。把数组传给函数时通常还需另传长度，因为形参 `int a[]` 会调整为 `int *a`，函数内无法用 `sizeof a` 求原数组的元素个数。
+**字符串容易差一个字节：** `char buf[8]` 若用作 C 字符串，最多容纳 7 个普通字符和末尾的 `\0`；8 个普通字符加终止符至少需要 9 字节。处理外部输入时同时检查**目标缓冲区容量和实际写入长度**，循环条件用 `i < 元素个数`。把数组传给函数时通常还需另传长度，因为形参 `int a[]` 会调整为 `int *a`，函数内无法用 `sizeof a` 求原数组的元素个数。
 <!-- TOPIC:arrays:END -->
 
 <a id="pointers"></a>
@@ -941,7 +941,7 @@ void array_example(void) {
 <a id="pointer-vs-array"></a>
 ### 指针与数组名有什么区别？
 
-**数组是一组元素；指针变量保存地址。**数组名在多数表达式中会转换为首元素地址，因此两者都能写 `a[1]`、`p[1]`，但本体和类型不同。
+**数组是一组元素；指针变量保存地址。** 数组名在多数表达式中会转换为首元素地址，因此两者都能写 `a[1]`、`p[1]`，但本体和类型不同。
 
 ```c
 void pointer_and_array_example(void) {
@@ -962,7 +962,7 @@ void pointer_and_array_example(void) {
 | 能否改指向 | 不能给数组名赋新地址 | 可以给 `p` 赋新地址 |
 | 类型 | `int [3]` | `int *` |
 
-`sizeof a` 和 `&a` 是数组名**不转换**为首元素指针的常见情况：`&a` 的类型是 `int (*)[3]`，即指向整个数组；而 `a` 在 `a + 1` 中转换为 `int *`。因此 `a + 1` 前进一个 `int`，`&a + 1` 前进整个 `int[3]`。两者的起始地址数值相同，类型和步长不同。允许形成指向数组末尾之后一个位置的指针，但**不能解引用**它。函数形参 `void show(int a[3])` 实际调整为 `void show(int *a)`，函数内 `sizeof a` 得到指针大小，长度需要另传。
+`sizeof a` 和 `&a` 是数组名**不转换** 为首元素指针的常见情况：`&a` 的类型是 `int (*)[3]`，即指向整个数组；而 `a` 在 `a + 1` 中转换为 `int *`。因此 `a + 1` 前进一个 `int`，`&a + 1` 前进整个 `int[3]`。两者的起始地址数值相同，类型和步长不同。允许形成指向数组末尾之后一个位置的指针，但**不能解引用** 它。函数形参 `void show(int a[3])` 实际调整为 `void show(int *a)`，函数内 `sizeof a` 得到指针大小，长度需要另传。
 
 <a id="wild-pointers"></a>
 ### 野指针与悬空指针：怎么避免？
@@ -983,7 +983,7 @@ void pointer_lifetime_example(void) {
 }
 ```
 
-**`p = NULL` 只清除了 `p`。**如果释放前还有 `int *q = p;`，那么释放后 `q` 仍保留失效地址。避免此类错误要明确对象由谁释放、其他使用者何时停止访问；声明指针时就初始化，没有有效对象时置 `NULL`，使用前检查对象生命周期和边界。`NULL` 本身也不能解引用。调试时结合 [HardFault 定位](#hardfault) 检查指针来源与更早的内存破坏。
+**`p = NULL` 只清除了 `p`。** 如果释放前还有 `int *q = p;`，那么释放后 `q` 仍保留失效地址。避免此类错误要明确对象由谁释放、其他使用者何时停止访问；声明指针时就初始化，没有有效对象时置 `NULL`，使用前检查对象生命周期和边界。`NULL` 本身也不能解引用。调试时结合 [HardFault 定位](#hardfault) 检查指针来源与更早的内存破坏。
 
 <a id="array-pointers"></a>
 ### 数组指针与指针数组
@@ -1043,7 +1043,7 @@ void matrix_example(void) {
 
 `matrix` 的每一行都是一个 `int[3]`，各行连续存放，所以转换后的类型是 `int (*)[3]`，**不是 `int **`**。`int **` 表示“指向 `int *` 的指针”，适用于另有一个指针数组等情形；若把连续的二维数组强制当成 `int **` 使用，程序会把整数数据误当作地址读取，属于错误用法。上例函数声明需要包含 `<stddef.h>` 才能使用 `size_t`。[C 标准草案：多维数组与形参调整](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
 
-**一句话回答：**“指针数组首先是 **数组**，里面装多个指针；数组指针首先是 **指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
+**一句话回答：** “指针数组首先是 **数组**，里面装多个指针；数组指针首先是 **指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
 <!-- TOPIC:array-pointers:END -->
 
 <!-- TOPIC:pointers:END -->
@@ -1320,7 +1320,7 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 ### 嵌入式 Linux 启动主线
 <!-- TOPIC:linux-boot:START -->
 
-以常见的 **ARM 嵌入式开发板**为例，先记住这条主线：
+以常见的 **ARM 嵌入式开发板** 为例，先记住这条主线：
 
 ```text
 上电复位 → 芯片 Boot ROM → [SPL] → U-Boot
@@ -1328,16 +1328,16 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
         → [按需切换到真正的根文件系统] → 系统服务和业务程序
 ```
 
-1. **Boot ROM 找下一阶段：**它是芯片内固化的启动代码，按启动配置从指定介质寻找并加载后续程序。具体启动介质和步骤由 SoC 决定。
-2. **SPL 初始化 DDR（可选）：**如果 Boot ROM 无法直接加载完整的 U-Boot，可先加载体积较小的 SPL；它通常设置 SDRAM/DDR 并加载 U-Boot 主程序。有些板卡还有其他引导阶段，不能把 SPL 当作所有 Linux 设备的必经环节。[U-Boot 的 SPL 启动说明](https://docs.u-boot.org/en/stable/usage/spl_boot.html)
-3. **U-Boot 准备内核：**将内核镜像加载到内存，按启动方案提供设备树 DTB、可选的 initramfs 和内核参数（如 `console=`、`root=`），然后进入内核入口。设备树描述板级硬件；不是所有架构都用 DTB，具体还要看固件与内核的接口。[U-Boot Bootflow 文档](https://docs.u-boot.org/en/stable/develop/bootstd/overview.html)、[Linux ARM64 启动要求](https://docs.kernel.org/arch/arm64/booting.html)
-4. **Linux 内核建立运行环境：**按架构和配置初始化内存管理、中断、调度器、内置驱动及文件系统等，识别硬件，准备根文件系统。部分驱动模块也可能在用户空间启动后再加载，不能认为所有驱动都在此刻完成初始化。
-5. **准备初始根文件系统：**如果提供 initramfs，内核先把它展开到初始 rootfs；如果不使用 initramfs，内核可按配置直接挂载目标根分区。某些精简设备只使用 initramfs，不再切换到另一块存储。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)
-6. **启动 PID 1：**内核运行第一个用户空间进程。如果 initramfs 里有 `/init`，它先作为 PID 1 运行，可寻找并挂载真正的根文件系统，再切换过去并执行正式的 init；否则内核从已挂载的根文件系统启动 init。正式的 init 可能是 `systemd`、BusyBox `init` 等，再按配置启动网络、日志、登录和业务服务。出现登录界面或应用界面，已经是这一阶段之后的事。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)、[init 程序排障文档](https://docs.kernel.org/admin-guide/init.html)
+1. **Boot ROM 找下一阶段：** 它是芯片内固化的启动代码，按启动配置从指定介质寻找并加载后续程序。具体启动介质和步骤由 SoC 决定。
+2. **SPL 初始化 DDR（可选）：** 如果 Boot ROM 无法直接加载完整的 U-Boot，可先加载体积较小的 SPL；它通常设置 SDRAM/DDR 并加载 U-Boot 主程序。有些板卡还有其他引导阶段，不能把 SPL 当作所有 Linux 设备的必经环节。[U-Boot 的 SPL 启动说明](https://docs.u-boot.org/en/stable/usage/spl_boot.html)
+3. **U-Boot 准备内核：** 将内核镜像加载到内存，按启动方案提供设备树 DTB、可选的 initramfs 和内核参数（如 `console=`、`root=`），然后进入内核入口。设备树描述板级硬件；不是所有架构都用 DTB，具体还要看固件与内核的接口。[U-Boot Bootflow 文档](https://docs.u-boot.org/en/stable/develop/bootstd/overview.html)、[Linux ARM64 启动要求](https://docs.kernel.org/arch/arm64/booting.html)
+4. **Linux 内核建立运行环境：** 按架构和配置初始化内存管理、中断、调度器、内置驱动及文件系统等，识别硬件，准备根文件系统。部分驱动模块也可能在用户空间启动后再加载，不能认为所有驱动都在此刻完成初始化。
+5. **准备初始根文件系统：** 如果提供 initramfs，内核先把它展开到初始 rootfs；如果不使用 initramfs，内核可按配置直接挂载目标根分区。某些精简设备只使用 initramfs，不再切换到另一块存储。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)
+6. **启动 PID 1：** 内核运行第一个用户空间进程。如果 initramfs 里有 `/init`，它先作为 PID 1 运行，可寻找并挂载真正的根文件系统，再切换过去并执行正式的 init；否则内核从已挂载的根文件系统启动 init。正式的 init 可能是 `systemd`、BusyBox `init` 等，再按配置启动网络、日志、登录和业务服务。出现登录界面或应用界面，已经是这一阶段之后的事。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)、[init 程序排障文档](https://docs.kernel.org/admin-guide/init.html)
 
-**与 MCU 裸机启动对照：**[常见 STM32 裸机程序](#memory-startup)由启动代码准备 C 运行环境，然后调用应用 `main()`；嵌入式 Linux 则由引导程序进入**内核**，内核准备根文件系统后才启动 PID 1，业务程序再由用户空间启动。PC 上常见的 UEFI/GRUB 与 ARM 板上的 Boot ROM/SPL/U-Boot 属于不同引导路径，但交给内核之后仍要完成内核初始化、根文件系统和用户空间启动。
+**与 MCU 裸机启动对照：** [常见 STM32 裸机程序](#memory-startup)由启动代码准备 C 运行环境，然后调用应用 `main()`；嵌入式 Linux 则由引导程序进入**内核**，内核准备根文件系统后才启动 PID 1，业务程序再由用户空间启动。PC 上常见的 UEFI/GRUB 与 ARM 板上的 Boot ROM/SPL/U-Boot 属于不同引导路径，但交给内核之后仍要完成内核初始化、根文件系统和用户空间启动。
 
-**面试简答：**“上电后 Boot ROM 加载引导程序；需要时先由 SPL 初始化 DDR，再由 U-Boot 加载内核、设备树和可选 initramfs。内核初始化自身与硬件、准备初始根文件系统并启动 PID 1；如有需要，PID 1 再切换到真正的根文件系统，最后拉起系统服务及应用。”
+**面试简答：** “上电后 Boot ROM 加载引导程序；需要时先由 SPL 初始化 DDR，再由 U-Boot 加载内核、设备树和可选 initramfs。内核初始化自身与硬件、准备初始根文件系统并启动 PID 1；如有需要，PID 1 再切换到真正的根文件系统，最后拉起系统服务及应用。”
 <!-- TOPIC:linux-boot:END -->
 
 <a id="linux-thread-stack-size"></a>
@@ -1540,7 +1540,7 @@ ListNode *merge_sorted_lists(ListNode *a, ListNode *b) {
 
 **题目：** 原地反转一个可修改的 C 字符串，例如 `"abcd"` 变成 `"dcba"`。这指的是**字符顺序反转**，不是把一句话里的单词顺序调换。
 
-**写法一：以 `\0` 结尾的 C 字符串。**先用 `strlen` 找到长度，让左右下标向中间移动并交换字符。结尾的 `\0` 保持原位。
+**写法一：以 `\0` 结尾的 C 字符串。** 先用 `strlen` 找到长度，让左右下标向中间移动并交换字符。结尾的 `\0` 保持原位。
 
 ```c
 #include <string.h>
@@ -1562,7 +1562,7 @@ void reverse_string(char *s) {
 /* 示例：char text[] = "abcd"; reverse_string(text); 结果为 "dcba"。 */
 ```
 
-**写法二：题目已经传入长度 `sSize`。**不用 `strlen`，从 `s[0]` 和 `s[sSize - 1]` 开始向中间交换；这也适用于没有 `\0` 结尾、但长度已知的字符数组。
+**写法二：题目已经传入长度 `sSize`。** 不用 `strlen`，从 `s[0]` 和 `s[sSize - 1]` 开始向中间交换；这也适用于没有 `\0` 结尾、但长度已知的字符数组。
 
 ```c
 #include <stddef.h>
@@ -1584,7 +1584,7 @@ void reverseString(char *s, int sSize) {
 /* 示例：char text[] = "abcd"; reverseString(text, 4); 结果为 "dcba"。 */
 ```
 
-**检查：** 两种写法都能处理空串、单字符及奇偶长度，时间 `O(n)`、额外空间 `O(1)`。传入的数组必须可写；第二种写法中 `sSize` 不包含 C 字符串末尾的 `\0`，且不能大于实际可访问的元素数。两种写法都是**按字节**反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
+**检查：** 两种写法都能处理空串、单字符及奇偶长度，时间 `O(n)`、额外空间 `O(1)`。传入的数组必须可写；第二种写法中 `sSize` 不包含 C 字符串末尾的 `\0`，且不能大于实际可访问的元素数。两种写法都是**按字节** 反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
 <!-- TOPIC:reverse-string:END -->
 
 <a id="endianness-code"></a>
@@ -1593,7 +1593,7 @@ void reverseString(char *s, int sSize) {
 
 **题目：** 写程序判断当前机器存放多字节整数时采用小端还是大端。
 
-**思路：** 一个整数 `0x0102` 有高位字节 `0x01`、低位字节 `0x02`。从它的**最低内存地址**读一个字节：读到 `0x02` 是小端，读到 `0x01` 是大端。C 允许通过 `unsigned char *` 观察对象的字节表示。
+**思路：** 一个整数 `0x0102` 有高位字节 `0x01`、低位字节 `0x02`。从它的**最低内存地址** 读一个字节：读到 `0x02` 是小端，读到 `0x01` 是大端。C 允许通过 `unsigned char *` 观察对象的字节表示。
 
 ```c
 #include <stdint.h>
@@ -1612,7 +1612,7 @@ int is_little_endian(void) {
 ### 链表区间删除与拼接
 <!-- TOPIC:splice-linked-lists:START -->
 
-**本题约定：** 删除 `list1` 中从 **0 开始**的下标 `a` 到 `b`（两端都包含）的节点，再把独立链表 `list2` 接到空出的位置。例：`10→1→13→6→9→5`，删除下标 3～4 的 `6→9`，接入 `100→101`，结果是 `10→1→13→100→101→5`。有些面经只要求删除区间后连接前后两段，相当于下面的 `list2 == NULL`。
+**本题约定：** 删除 `list1` 中从 **0 开始** 的下标 `a` 到 `b`（两端都包含）的节点，再把独立链表 `list2` 接到空出的位置。例：`10→1→13→6→9→5`，删除下标 3～4 的 `6→9`，接入 `100→101`，结果是 `10→1→13→100→101→5`。有些面经只要求删除区间后连接前后两段，相当于下面的 `list2 == NULL`。
 
 **思路：** 先找到删除区间**前一个节点** `before` 和区间**后一个节点** `after`；保存要删除的首节点，再改两条连接：`before → list2`、`list2` 尾节点 `→ after`。哑节点让“从头节点开始删除”也能用同一套逻辑。
 
@@ -1768,5 +1768,5 @@ bool mini_free(void *ptr) {
 }
 ```
 
-**检查：** `mini_malloc(0)` 返回 `NULL` 是本示例的约定；它不等同于各平台的标准 `malloc(0)` 行为。`mini_free(NULL)` 成功，重复释放或传入非本分配器返回的地址则返回 `false`。已释放指针不能再解引用；空闲总字节数够但没有足够大的**连续**空闲块时仍可能分配失败。本示例不处理并发访问，也不能替代标准库或 FreeRTOS 的实际分配器。
+**检查：** `mini_malloc(0)` 返回 `NULL` 是本示例的约定；它不等同于各平台的标准 `malloc(0)` 行为。`mini_free(NULL)` 成功，重复释放或传入非本分配器返回的地址则返回 `false`。已释放指针不能再解引用；空闲总字节数够但没有足够大的**连续** 空闲块时仍可能分配失败。本示例不处理并发访问，也不能替代标准库或 FreeRTOS 的实际分配器。
 <!-- TOPIC:simple-allocator:END -->
