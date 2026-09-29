@@ -27,7 +27,11 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [`static`](#static) · [数组指针与指针数组](#array-pointers) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+  - [`volatile`](#volatile) · [`static`](#static) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+- [数组](#arrays)
+  - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
+- [指针](#pointers)
+  - [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
@@ -718,69 +722,6 @@ void process_data(int data[static 10]) {
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:static:END -->
 
-<a id="array-pointers"></a>
-### 数组指针与指针数组
-<!-- TOPIC:array-pointers:START -->
-
-**面试问题：`int *p[3]` 和 `int (*q)[3]` 有什么区别？** 先找到变量名，再看它紧挨着什么：`p[3]` 说明 **`p` 是数组**，其中每个元素是 `int *`；`(*q)` 先把 `q` 与 `*` 结合，说明 **`q` 是指针**，它指向一个含 3 个 `int` 的数组。括号不能省，省掉就变成另一种类型。
-
-```c
-void pointer_examples(void) {
-    int a[3] = {10, 20, 30};  // a 本身是“含 3 个 int 的数组”
-    int x = 10, y = 20, z = 30;
-
-    int *p[3] = {&x, &y, &z}; // 指针数组：3 个 int * 元素
-    int (*q)[3] = &a;          // 数组指针：指向整个 int[3] 数组
-
-    *p[1] = 99;               // p[1] 指向 y，因此 y 变成 99
-    (*q)[1] = 88;             // q 指向 a，因此 a[1] 变成 88
-}
-```
-
-```text
-指针数组 p：本体是数组                数组指针 q：本体是指针
-p[0] ──→ x:10                      q ──→ a: [10][88][30]
-p[1] ──→ y:99
-p[2] ──→ z:30
-```
-
-| 比较项 | `int *p[3]`：指针数组 | `int (*q)[3]`：数组指针 |
-| --- | --- | --- |
-| 变量本身 | 一个有 3 个元素的数组。 | 一个指针变量。 |
-| 保存什么 | 每个元素各保存一个 `int` 的地址。 | 保存一个 `int[3]` 数组的地址。 |
-| 取值 | `*p[1]`：取第 2 个指针所指的整数。 | `(*q)[1]` 或 `q[0][1]`：取所指数组的第 2 个整数。 |
-| `sizeof` | `sizeof p` 是 **3 个指针元素** 占的总字节数。 | `sizeof q` 是 **一个指针** 的字节数；`sizeof *q` 才是整个 `int[3]` 的字节数。 |
-| `+1` 的含义 | `p + 1` 指向下一个 `int *` 元素。 | `q + 1` 跨过整个 `int[3]` 数组。 |
-
-**数组名又是什么？** 在上例中，`a` 的类型是 `int[3]`，它不是指针变量。不过在多数表达式里，`a` 会转换为指向首元素的 `int *`；`&a` 的类型则是 `int (*)[3]`，正好可以赋给 `q`。`a` 与 `&a` 指向的起始位置相同，但 **类型和 `+1` 的步长不同**：`a + 1` 前进一个 `int`，`&a + 1` 前进一个完整的 `int[3]`。不要解引用指向对象末尾之后的指针。[C 标准草案：数组转换与指针运算](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
-
-**为什么 `sizeof(a)` 不等于 `sizeof(q)`？**`sizeof` 是数组自动转成首元素指针的主要例外之一：在定义 `a` 的作用域内，`sizeof a` 得到整个数组的字节数，即 `3 * sizeof(int)`；`sizeof q` 只得到指针大小。`sizeof a / sizeof a[0]` 可以在这里求元素个数，不能对一个普通指针照搬这个公式。函数形参 `int a[]` 会调整成 `int *a`，因此在这样的函数内部对形参使用 `sizeof a` 得到的是指针大小，并不知道调用者数组有几个元素；长度应另传。[C 标准草案：`sizeof` 与数组形参](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
-
-#### 二维数组为什么常用数组指针？
-
-```c
-#include <stddef.h>
-
-void print_rows(int rows[][3], size_t count); // 形参调整后是 int (*rows)[3]
-
-void matrix_example(void) {
-    int matrix[2][3] = {{1, 2, 3}, {4, 5, 6}};
-    int (*row)[3] = matrix; // matrix 在这里转换成指向第 1 行的指针
-
-    int first = row[0][0]; // 1
-    int last  = row[1][2]; // 6；row + 1 指向下一整行
-
-    print_rows(matrix, 2);
-    (void)first;
-    (void)last;
-}
-```
-
-`matrix` 的每一行都是一个 `int[3]`，各行连续存放，所以转换后的类型是 `int (*)[3]`，**不是 `int **`**。`int **` 表示“指向 `int *` 的指针”，适用于另有一个指针数组等情形；若把连续的二维数组强制当成 `int **` 使用，程序会把整数数据误当作地址读取，属于错误用法。上例函数声明需要包含 `<stddef.h>` 才能使用 `size_t`。[C 标准草案：多维数组与形参调整](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
-
-**一句话回答：**“指针数组首先是 **数组**，里面装多个指针；数组指针首先是 **指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
-<!-- TOPIC:array-pointers:END -->
-
 <a id="struct-alignment"></a>
 ### 结构体内存对齐
 <!-- TOPIC:struct-alignment:START -->
@@ -841,6 +782,151 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:malloc-free:END -->
+
+<a id="arrays"></a>
+## 数组
+<!-- TOPIC:arrays:START -->
+
+<a id="array-basics"></a>
+### 数组的存储与下标
+
+数组由**相同类型的元素连续组成**。`int a[3] = {10, 20, 30};` 有 3 个元素，有效下标是 `0、1、2`；`a[i]` 访问第 `i` 个元素。数组对象的大小是 `3 * sizeof(int)`，并不等于一个指针的大小。数组名在多数表达式中会转换为指向首元素的指针，具体区别见[指针与数组名](#pointer-vs-array)。
+
+<a id="array-out-of-bounds"></a>
+### 数组越界会怎样？
+
+```c
+#include <stddef.h>
+
+void array_example(void) {
+    int a[3] = {10, 20, 30};
+    // int x = a[3];  // 错误：越界读
+    // a[3] = 40;     // 错误：越界写
+
+    for (size_t i = 0; i < 3; ++i) {  // 正确：最后一次访问 a[2]
+        /* 使用 a[i] */
+    }
+}
+```
+
+在 C 语言中，**越界访问是未定义行为**：越界读可能得到无关数据或触发异常；越界写可能破坏相邻对象、指针或栈上的调用现场。程序也可能暂时看起来正常，直到稍后才发生 HardFault。此时异常现场显示的是“在哪里撞墙”，还应追查更早的越界写入；参见 [HardFault 定位](#hardfault)。编译器也可以基于“合法程序不会越界”的假设优化代码，不能依赖某次运行的表现。
+
+**字符串容易差一个字节：**`char buf[8]` 若用作 C 字符串，最多容纳 7 个普通字符和末尾的 `\0`；8 个普通字符加终止符至少需要 9 字节。处理外部输入时同时检查**目标缓冲区容量和实际写入长度**，循环条件用 `i < 元素个数`。把数组传给函数时通常还需另传长度，因为形参 `int a[]` 会调整为 `int *a`，函数内无法用 `sizeof a` 求原数组的元素个数。
+<!-- TOPIC:arrays:END -->
+
+<a id="pointers"></a>
+## 指针
+<!-- TOPIC:pointers:START -->
+
+<a id="pointer-vs-array"></a>
+### 指针与数组名有什么区别？
+
+**数组是一组元素；指针变量保存地址。**数组名在多数表达式中会转换为首元素地址，因此两者都能写 `a[1]`、`p[1]`，但本体和类型不同。
+
+```c
+void pointer_and_array_example(void) {
+    int a[3] = {10, 20, 30};
+    int *p = a;             // 这里 a 转换为 &a[0]
+    int second = p[1];     // 20，与 a[1] 相同
+    p = &a[2];             // 可以给指针变量重新赋地址
+    // a = &a[2];          // 错误：数组不能被赋值
+    (void)second;
+    (void)p;
+}
+```
+
+| 比较 | 数组 `a` | 指针变量 `p` |
+| --- | --- | --- |
+| 本体 | 3 个连续的 `int` | 一个存放地址的变量 |
+| `sizeof` | 整个数组的大小：`3 * sizeof(int)` | 指针变量本身的大小 |
+| 能否改指向 | 不能给数组名赋新地址 | 可以给 `p` 赋新地址 |
+| 类型 | `int [3]` | `int *` |
+
+`sizeof a` 和 `&a` 是数组名**不转换**为首元素指针的常见情况：`&a` 的类型是 `int (*)[3]`，即指向整个数组；而 `a` 在 `a + 1` 中转换为 `int *`。因此 `a + 1` 前进一个 `int`，`&a + 1` 前进整个 `int[3]`。两者的起始地址数值相同，类型和步长不同。允许形成指向数组末尾之后一个位置的指针，但**不能解引用**它。函数形参 `void show(int a[3])` 实际调整为 `void show(int *a)`，函数内 `sizeof a` 得到指针大小，长度需要另传。
+
+<a id="wild-pointers"></a>
+### 野指针与悬空指针：怎么避免？
+
+野指针通常泛指**没有指向有效对象却被拿来访问的指针**。常见来源是未初始化的指针、对象释放后仍保留的地址、返回局部自动变量的地址，或越界计算后继续解引用。其中对象已释放、局部变量生命周期已结束等情况也常称为**悬空指针**。
+
+```c
+#include <stdlib.h>
+
+void pointer_lifetime_example(void) {
+    // int *bad;           // 未初始化的指针不能解引用
+    int *p = malloc(sizeof *p);
+    if (p != NULL) {
+        *p = 10;
+        free(p);            // p 原来指向的对象生命周期结束
+        p = NULL;           // 防止再通过 p 使用旧地址
+    }
+}
+```
+
+**`p = NULL` 只清除了 `p`。**如果释放前还有 `int *q = p;`，那么释放后 `q` 仍保留失效地址。避免此类错误要明确对象由谁释放、其他使用者何时停止访问；声明指针时就初始化，没有有效对象时置 `NULL`，使用前检查对象生命周期和边界。`NULL` 本身也不能解引用。调试时结合 [HardFault 定位](#hardfault) 检查指针来源与更早的内存破坏。
+
+<a id="array-pointers"></a>
+### 数组指针与指针数组
+<!-- TOPIC:array-pointers:START -->
+
+**面试问题：`int *p[3]` 和 `int (*q)[3]` 有什么区别？** 先找到变量名，再看它紧挨着什么：`p[3]` 说明 **`p` 是数组**，其中每个元素是 `int *`；`(*q)` 先把 `q` 与 `*` 结合，说明 **`q` 是指针**，它指向一个含 3 个 `int` 的数组。括号不能省，省掉就变成另一种类型。
+
+```c
+void pointer_examples(void) {
+    int a[3] = {10, 20, 30};  // a 本身是“含 3 个 int 的数组”
+    int x = 10, y = 20, z = 30;
+
+    int *p[3] = {&x, &y, &z}; // 指针数组：3 个 int * 元素
+    int (*q)[3] = &a;          // 数组指针：指向整个 int[3] 数组
+
+    *p[1] = 99;               // p[1] 指向 y，因此 y 变成 99
+    (*q)[1] = 88;             // q 指向 a，因此 a[1] 变成 88
+}
+```
+
+```text
+指针数组 p：本体是数组                数组指针 q：本体是指针
+p[0] ──→ x:10                      q ──→ a: [10][88][30]
+p[1] ──→ y:99
+p[2] ──→ z:30
+```
+
+| 比较项 | `int *p[3]`：指针数组 | `int (*q)[3]`：数组指针 |
+| --- | --- | --- |
+| 变量本身 | 一个有 3 个元素的数组。 | 一个指针变量。 |
+| 保存什么 | 每个元素各保存一个 `int` 的地址。 | 保存一个 `int[3]` 数组的地址。 |
+| 取值 | `*p[1]`：取第 2 个指针所指的整数。 | `(*q)[1]` 或 `q[0][1]`：取所指数组的第 2 个整数。 |
+| `sizeof` | `sizeof p` 是 **3 个指针元素** 占的总字节数。 | `sizeof q` 是 **一个指针** 的字节数；`sizeof *q` 才是整个 `int[3]` 的字节数。 |
+| `+1` 的含义 | `p + 1` 指向下一个 `int *` 元素。 | `q + 1` 跨过整个 `int[3]` 数组。 |
+
+上例中 `&a` 是 `int (*)[3]`，可以赋给 `q`；`sizeof *q` 则是整个 `int[3]` 的大小。数组名的转换、`sizeof` 和函数形参的规则见[指针与数组名](#pointer-vs-array)。[C 标准草案：数组转换、`sizeof` 与数组形参](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+#### 二维数组为什么常用数组指针？
+
+```c
+#include <stddef.h>
+
+void print_rows(int rows[][3], size_t count); // 形参调整后是 int (*rows)[3]
+
+void matrix_example(void) {
+    int matrix[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    int (*row)[3] = matrix; // matrix 在这里转换成指向第 1 行的指针
+
+    int first = row[0][0]; // 1
+    int last  = row[1][2]; // 6；row + 1 指向下一整行
+
+    print_rows(matrix, 2);
+    (void)first;
+    (void)last;
+}
+```
+
+`matrix` 的每一行都是一个 `int[3]`，各行连续存放，所以转换后的类型是 `int (*)[3]`，**不是 `int **`**。`int **` 表示“指向 `int *` 的指针”，适用于另有一个指针数组等情形；若把连续的二维数组强制当成 `int **` 使用，程序会把整数数据误当作地址读取，属于错误用法。上例函数声明需要包含 `<stddef.h>` 才能使用 `size_t`。[C 标准草案：多维数组与形参调整](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+**一句话回答：**“指针数组首先是 **数组**，里面装多个指针；数组指针首先是 **指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
+<!-- TOPIC:array-pointers:END -->
+
+<!-- TOPIC:pointers:END -->
 
 <a id="baremetal-rtos-linux"></a>
 ## 裸机、RTOS 与 Linux
