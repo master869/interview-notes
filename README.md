@@ -38,8 +38,8 @@
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
-- [Linux 进程与线程](#linux)
-  - [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
+- [Linux 启动、进程与线程](#linux)
+  - [嵌入式 Linux 启动主线](#linux-boot) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
@@ -1314,7 +1314,31 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 <!-- TOPIC:freertos-linux-stack:END -->
 
 <a id="linux"></a>
-## Linux 进程与线程
+## Linux 启动、进程与线程
+
+<a id="linux-boot"></a>
+### 嵌入式 Linux 启动主线
+<!-- TOPIC:linux-boot:START -->
+
+以常见的 **ARM 嵌入式开发板**为例，先记住这条主线：
+
+```text
+上电复位 → 芯片 Boot ROM → [SPL] → U-Boot
+        → Linux 内核 → 初始根文件系统 → PID 1（/init 或 init/systemd）
+        → [按需切换到真正的根文件系统] → 系统服务和业务程序
+```
+
+1. **Boot ROM 找下一阶段：**它是芯片内固化的启动代码，按启动配置从指定介质寻找并加载后续程序。具体启动介质和步骤由 SoC 决定。
+2. **SPL 初始化 DDR（可选）：**如果 Boot ROM 无法直接加载完整的 U-Boot，可先加载体积较小的 SPL；它通常设置 SDRAM/DDR 并加载 U-Boot 主程序。有些板卡还有其他引导阶段，不能把 SPL 当作所有 Linux 设备的必经环节。[U-Boot 的 SPL 启动说明](https://docs.u-boot.org/en/stable/usage/spl_boot.html)
+3. **U-Boot 准备内核：**将内核镜像加载到内存，按启动方案提供设备树 DTB、可选的 initramfs 和内核参数（如 `console=`、`root=`），然后进入内核入口。设备树描述板级硬件；不是所有架构都用 DTB，具体还要看固件与内核的接口。[U-Boot Bootflow 文档](https://docs.u-boot.org/en/stable/develop/bootstd/overview.html)、[Linux ARM64 启动要求](https://docs.kernel.org/arch/arm64/booting.html)
+4. **Linux 内核建立运行环境：**按架构和配置初始化内存管理、中断、调度器、内置驱动及文件系统等，识别硬件，准备根文件系统。部分驱动模块也可能在用户空间启动后再加载，不能认为所有驱动都在此刻完成初始化。
+5. **准备初始根文件系统：**如果提供 initramfs，内核先把它展开到初始 rootfs；如果不使用 initramfs，内核可按配置直接挂载目标根分区。某些精简设备只使用 initramfs，不再切换到另一块存储。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)
+6. **启动 PID 1：**内核运行第一个用户空间进程。如果 initramfs 里有 `/init`，它先作为 PID 1 运行，可寻找并挂载真正的根文件系统，再切换过去并执行正式的 init；否则内核从已挂载的根文件系统启动 init。正式的 init 可能是 `systemd`、BusyBox `init` 等，再按配置启动网络、日志、登录和业务服务。出现登录界面或应用界面，已经是这一阶段之后的事。[Linux 内核 initramfs 说明](https://docs.kernel.org/filesystems/ramfs-rootfs-initramfs.html)、[init 程序排障文档](https://docs.kernel.org/admin-guide/init.html)
+
+**与 MCU 裸机启动对照：**[常见 STM32 裸机程序](#memory-startup)由启动代码准备 C 运行环境，然后调用应用 `main()`；嵌入式 Linux 则由引导程序进入**内核**，内核准备根文件系统后才启动 PID 1，业务程序再由用户空间启动。PC 上常见的 UEFI/GRUB 与 ARM 板上的 Boot ROM/SPL/U-Boot 属于不同引导路径，但交给内核之后仍要完成内核初始化、根文件系统和用户空间启动。
+
+**面试简答：**“上电后 Boot ROM 加载引导程序；需要时先由 SPL 初始化 DDR，再由 U-Boot 加载内核、设备树和可选 initramfs。内核初始化自身与硬件、准备初始根文件系统并启动 PID 1；如有需要，PID 1 再切换到真正的根文件系统，最后拉起系统服务及应用。”
+<!-- TOPIC:linux-boot:END -->
 
 <a id="linux-thread-stack-size"></a>
 ### 新线程的默认栈大小
