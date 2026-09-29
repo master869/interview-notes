@@ -1,6 +1,6 @@
 # 嵌入式面试知识点笔记
 
-按主题整理面试经验，涵盖程序内存布局、Cortex-M 寄存器、中断与 HardFault、I2C、SPI、C/C++、FreeRTOS、Linux 进程与线程，以及网络、调试和编程题。建议先掌握 **六大内存分区**，再用 `static`、`malloc`、任务栈等章节把概念串起来；同一知识点的新问题继续补充到对应小节。
+按主题整理面试经验，涵盖程序内存布局、Cortex-M 寄存器、中断与 HardFault、I2C、SPI、UART、Bootloader 与 OTA、C/C++、FreeRTOS、Linux 进程与线程，以及网络、调试和编程题。建议先掌握 **六大内存分区**，再用 `static`、`malloc`、任务栈等章节把概念串起来；同一知识点的新问题继续补充到对应小节。
 
 [查看实习经历交互页](https://master869.github.io/interview-notes/internship.html) · [查看 SPI 逐拍时序演示](https://master869.github.io/interview-notes/spi-mode0.html)
 
@@ -24,6 +24,8 @@
   - [一字节时序与 8N1](#uart-frame) · [接收与业务帧解析](#uart-reception) · [排障要点](#uart-debug) · [面试常见问题](#uart-questions)
 - [CRC 校验](#crc)
   - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
+- [Bootloader 与 OTA 升级](#bootloader-ota)
+  - [两者的分工](#bootloader-ota-basics) · [双分区升级流程](#bootloader-ota-flow) · [断电与回滚](#bootloader-ota-recovery) · [面试常见问题](#bootloader-ota-questions)
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
@@ -625,6 +627,63 @@ uint8_t crc8_msb(const uint8_t *data, size_t len,
 
 调用时保证 `data` 指向至少 `len` 个有效字节。实际项目还要核对参与校验的字段、CRC 字节位置、是否使用硬件 CRC 单元，以及驱动与外设的参数是否完全一致。
 <!-- TOPIC:crc:END -->
+
+<a id="bootloader-ota"></a>
+## Bootloader 与 OTA 升级
+<!-- TOPIC:bootloader-ota:START -->
+
+<a id="bootloader-ota-basics"></a>
+### Bootloader 和 OTA 各负责什么？
+
+**Bootloader** 是应用程序运行前的引导程序，负责按设备的启动设计检查固件、选择要运行的镜像，并把控制权交给应用。部分 MCU 自带用于下载或恢复的 ROM Bootloader；产品也可在 Flash 中放自己的 Bootloader，二者的位置和功能不能混为一谈。对于 Cortex-M 自定义引导程序，跳转应用时还要处理应用的初始栈指针、复位入口、中断向量表及先前外设/中断状态；细节以具体芯片和工程布局为准。[ST 双 Bank 升级应用笔记](https://www.st.com/resource/en/application_note/an4767-onthefly-firmware-update-for-dual-bank-stm32-microcontrollers-stmicroelectronics.pdf)
+
+**OTA（Over-the-Air）** 指通过无线或网络通道获取新固件并升级的方式。通常是正在运行的应用负责下载、分块写入和请求升级；Bootloader 在重启时检查升级状态、选择或搬运镜像，再启动应用。串口或 USB 升级也能复用类似的 Bootloader 与分区设计，但传输方式本身不叫 OTA。
+
+<a id="bootloader-ota-flow"></a>
+### 双分区升级：从下载到确认
+
+下面用**示意布局**说明 A/B 两份应用固件的升级；实际地址、分区数量，以及“直接从 B 运行”还是“将 B 交换/复制到运行区”，由硬件和 Bootloader 方案决定。[MCUboot 升级策略](https://docs.mcuboot.com/design.html)
+
+```text
+Flash：│ Bootloader │ 应用 A：当前可用 │ 应用 B：下载候选 │ 升级状态 │
+
+运行 A ──下载并写入 B──→ 检查 B ──标记“试运行”──→ 重启
+  ↑                                              │
+  └────────── 若新版本未确认，按方案回滚 ── Bootloader 启动新版本
+                                                 │
+                                  新版本自检通过后标记“确认可用”
+```
+
+1. **下载：**运行中的 A 把新固件分块写入 B，记录写入进度，避免越过分区边界；下载未完成时不要将 B 标记为可启动。
+2. **验证：**核对镜像格式、长度、目标型号/硬件版本、版本策略及完整性。CRC 或哈希可发现数据变化；若要确认固件确由可信发布者签发，还需使用受信任密钥验证**数字签名**，单靠 CRC 不具备身份认证能力。[MCUboot 镜像校验与签名](https://docs.mcuboot.com/design.html)
+3. **试启动：**确认 B 满足启动条件后，可靠地写入“待试运行”状态并重启。Bootloader 再次验证候选镜像，按方案切换或搬运镜像并启动新版本。
+4. **确认或回滚：**新版本完成关键自检后将自己标记为“确认可用”；若它崩溃、反复重启或一直未确认，下一次启动回到旧版本。这里的回滚必须在设计与配置中实现，不能假设所有 Bootloader 都自动支持。[MCUboot 测试升级与回滚](https://docs.mcuboot.com/design.html)；[ESP-IDF 回滚流程](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/ota.html)
+
+例如显示设备从 A 版升级到 B 版，B 虽能进入 `main()`，但显示任务一直报错。只检查“程序启动了”就确认升级，会让故障固化；把显示初始化、关键配置读取和必要的通信自检纳入确认条件，才有机会在下一次重启时回到 A。
+
+<a id="bootloader-ota-recovery"></a>
+### 断电、空间不足与恢复
+
+| 故障点 | 设计时要保证什么？ |
+| --- | --- |
+| 下载或写入 B 中途断电 | A 仍完整可启动；B 没有通过校验前不可选为正式应用。 |
+| 更新“启动哪个版本”的状态时断电 | 状态写入要可恢复，例如冗余记录、序号和校验；重启后应能选出明确的有效版本。ESP-IDF 的 OTA 状态区使用两个可独立擦写的扇区处理这一问题。[ESP-IDF OTA 状态区](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/ota.html) |
+| 新版本能启动但运行不稳定 | 试运行期间不立即确认；故障后按回滚规则重新启动旧版本。 |
+| Flash 只够放一份应用 | 无法照搬完整 A/B 双镜像回滚；需按容量设计暂存空间、恢复入口或可断点恢复的更新流程。 |
+
+Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路径或其他保护，应用分区再完整也可能无法启动。对带签名和防降级要求的产品，回滚旧固件还需与版本安全策略协调。
+
+<a id="bootloader-ota-questions"></a>
+### 面试常见问题
+
+1. **OTA 和 Bootloader 是一回事吗？**不是。OTA 描述获取与安装新固件的升级方式；Bootloader 是启动阶段执行的程序，负责按设计选择和启动镜像。
+2. **为什么不能直接覆盖正在运行的固件？**写入中断电会使唯一镜像不完整；执行 Flash 与写 Flash 还可能受芯片限制。A/B 或暂存方案用于保留恢复路径，但有额外 Flash 成本。
+3. **CRC 校验通过就说明固件可信吗？**不能。CRC 主要检查数据是否意外损坏；防止别人伪造镜像需要验证数字签名及可信公钥。
+4. **新固件能启动，为什么还要应用确认？**能跳到入口不等于业务正常。确认前进行关键自检；未确认时让下一次启动回滚。
+5. **升级到一半断电怎么办？**先区分断在镜像写入、状态写入还是首次试启动；保留旧镜像，并让每个阶段的持久状态在重启后可识别和恢复。
+
+**面试简答：**“应用下载新固件到备用区，校验格式、版本、完整性及需要的签名；Bootloader 在重启后试启动新版本。新版本自检成功才确认，否则按回滚规则启动旧版本。重点是断电后仍能确定有效镜像，且不能把 CRC 当作固件来源认证。”
+<!-- TOPIC:bootloader-ota:END -->
 
 <a id="smartcard-internship"></a>
 ## 智能卡读卡器实习技术
