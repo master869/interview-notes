@@ -29,18 +29,20 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [`static`](#static) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free)
+  - [`volatile`](#volatile) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
 - [指针](#pointers)
   - [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
-  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
 - [Linux 启动、进程与线程](#linux)
   - [嵌入式 Linux 启动主线](#linux-boot) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
+- [驱动经历与调试](#driver-experience)
+  - [驱动做过哪部分](#driver-work) · [驱动怎么调试](#driver-debug)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
   - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
@@ -802,6 +804,26 @@ void process_data(int data[static 10]) {
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:static:END -->
 
+<a id="variable-shadowing"></a>
+### 同名变量与遮蔽
+<!-- TOPIC:variable-shadowing:START -->
+
+**面试问题：函数内和函数外定义同名变量，访问的是谁？** 内层作用域的变量会遮蔽外层同名变量；两者是不同对象，修改局部变量不会改动全局变量。
+
+```c
+#include <stdio.h>
+
+int count = 10;
+
+void show(void) {
+    int count = 3;
+    printf("%d\n", count);  /* 输出 3 */
+}
+```
+
+函数结束后，全局 `count` 仍为 10。嵌套代码块的同名局部变量也遵循这一规则。C++ 可用 `::count` 指明全局变量；C 语言没有 `::` 语法。这里讨论的是作用域，与 `static` 决定的存储期和链接属性是不同问题，见 [`static`](#static)。
+<!-- TOPIC:variable-shadowing:END -->
+
 <a id="struct-alignment"></a>
 ### 结构体内存对齐
 <!-- TOPIC:struct-alignment:START -->
@@ -902,6 +924,25 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:malloc-free:END -->
+
+<a id="memory-leak"></a>
+### 内存泄漏
+<!-- TOPIC:memory-leak:START -->
+
+**面试问题：未释放的内存存在哪里，会怎样？** 动态申请的内存不会因为保存地址的局部指针离开作用域就自动释放。如果最后一个有效地址丢失，这块内存就无法再通过程序正常释放，形成内存泄漏。
+
+```c
+#include <stdlib.h>
+
+void process(void) {
+    char *buf = malloc(100);
+    if (buf == NULL) return;
+    /* 使用 buf */
+}  /* buf 消失了，申请的 100 字节仍未释放 */
+```
+
+在长时间运行的服务或 MCU 程序中，反复调用可能逐渐耗尽可用内存。Linux 进程退出后，操作系统会回收该进程的资源，但不能因此忽略运行期间的泄漏。应在所有退出路径配对释放资源，并明确“谁申请、谁负责释放”；排查时可在主机上用内存检查工具，嵌入式系统则可记录分配与释放次数、剩余内存和失败路径。动态分配与[六大内存分区](#memory-layout)中所说的“堆”相关，但具体分配实现由平台决定。
+<!-- TOPIC:memory-leak:END -->
 
 <a id="arrays"></a>
 ## 数组
@@ -1281,6 +1322,37 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)。
 <!-- TOPIC:freertos-task-creation:END -->
 
+<a id="task-stack-sizing"></a>
+### 任务栈大小如何确定？
+<!-- TOPIC:task-stack-sizing:START -->
+
+**面试问题：任务栈大小能人为设定吗，设多少合适？** 创建 FreeRTOS 任务或 Zephyr 线程时由开发者指定栈大小。只看任务入口函数通常不能精确得出最大用量：要估算最深调用路径上**同时存活**的局部变量、返回地址、保存的寄存器和任务切换现场；还要确认当前移植中断时使用任务栈还是独立中断栈。不用把互不重叠的调用路径简单相加。
+
+例如显示任务里有 `uint8_t line[128]`，它**可能**占用任务栈；还要考虑 `prepare_text()`、`send_i2c()` 及其下层函数在最深调用时的用量：
+
+```c
+void DisplayTask(void *arg) {
+    uint8_t line[128];
+    for (;;) {
+        prepare_text(line);
+        send_i2c(line);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+```
+
+大局部数组、`printf` 一类库函数、递归和错误处理路径尤其值得检查。编译器也可能优化局部变量，实际用量应结合测量。把缓冲区改成静态或全局对象可移出任务栈，但仍占 RAM，还须处理多任务共享时的并发访问。
+
+1. 根据调用链、局部变量和平台上下文保存开销给出初始栈大小。
+2. 运行最吃栈的场景，例如最长显示内容、日志和异常处理。
+3. 测历史最低剩余量：FreeRTOS 用 [`uxTaskGetStackHighWaterMark()`](#freertos-stack-check)；Zephyr 可用 [Thread Analyzer](https://docs.zephyrproject.org/latest/services/debugging/thread-analyzer.html)。
+4. 按实测峰值和未覆盖的路径留余量，开启平台支持的栈溢出检测。测过的场景只能说明那些路径的用量，不能证明其他路径安全。
+
+**注意单位：** 标准 FreeRTOS 的 `xTaskCreate()` 栈深度按 `StackType_t` 元素数指定；如果该类型是 4 字节，传入 `512` 对应 2048 字节。Zephyr 的线程栈大小参数按字节表示；ESP-IDF 改造过 FreeRTOS 接口，其 `xTaskCreate()` 栈大小也按字节计算。最终以项目所用版本及平台文档为准。
+
+面试可概括为：**先估算最坏调用链，再用栈水位测量，最后留安全余量。** 参考：[FreeRTOS 任务创建](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)、[FreeRTOS 栈检查](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch13.md)、[Zephyr 线程 API](https://docs.zephyrproject.org/latest/doxygen/html/group__thread__apis.html)、[ESP-IDF FreeRTOS 差异](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos_idf.html)。
+<!-- TOPIC:task-stack-sizing:END -->
+
 <a id="freertos-stack-check"></a>
 ### 检查任务栈
 <!-- TOPIC:freertos-stack-check:START -->
@@ -1414,6 +1486,27 @@ socket() → [setsockopt()] → bind() → listen() → accept() → recv()/send
 
 参考：[Linux `socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)、[`bind(2)`](https://man7.org/linux/man-pages/man2/bind.2.html)、[`accept(2)`](https://man7.org/linux/man-pages/man2/accept.2.html)。
 <!-- TOPIC:tcp-server-connection:END -->
+
+<a id="driver-experience"></a>
+## 驱动经历与调试
+
+<a id="driver-work"></a>
+### 驱动做过哪部分？
+<!-- TOPIC:driver-work:START -->
+
+**面试回答思路：** 先说设备和目标，再说自己负责的层次、关键接口、遇到的问题和验证结果，避免把使用现成驱动说成从零编写底层驱动。
+
+以 I2C 显示屏项目为例，如果底层总线由 MCU 厂商 HAL 驱动提供，可以如实说：自己在设备层实现显示屏初始化命令、显示数据组织和发送、错误码处理，并调用 HAL 的 I2C 收发接口；I2C 控制器驱动本身由 HAL 提供。具体只保留自己实际做过的部分，通信格式见 [I2C](#i2c)。如果做的是 Linux 设备驱动，还可以说明设备树匹配、`probe` 获取资源、读写或控制接口、卸载时释放资源等自己真正实现的环节。[Linux 平台驱动文档](https://docs.kernel.org/driver-api/driver-model/platform.html)
+<!-- TOPIC:driver-work:END -->
+
+<a id="driver-debug"></a>
+### 驱动怎么调试？
+<!-- TOPIC:driver-debug:START -->
+
+**面试回答思路：** 按“现象 → 分层定位 → 找到原因 → 修复并复测”讲一个真实故障，尽量给出测量或日志证据。
+
+例如 **I2C 屏幕不亮的排查示例**：先测供电、复位、接线和上拉电阻；再用逻辑分析仪看 START、地址、ACK、命令与数据字节是否符合预期；同时检查驱动接口返回值。若地址阶段无 ACK，优先核对 7 位地址、读写位及硬件连接；若每个字节都有 ACK 但仍不显示，再查初始化顺序、控制字节、页地址和显存数据。改动后重复上电和连续刷新测试，确认问题没有复发。这是排查方法示例，不代表已经发生在你的项目中。Linux 驱动还应检查匹配与 `probe` 是否执行、资源是否申请成功，并结合内核日志与[动态调试](https://docs.kernel.org/admin-guide/dynamic-debug-howto.html)定位。调试器本身无法连接的情况见[嵌入式调试接口排障](#debug-interface)。
+<!-- TOPIC:driver-debug:END -->
 
 <a id="debug-interface"></a>
 ## 嵌入式调试接口排障
