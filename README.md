@@ -11,7 +11,7 @@
 - [Cortex-M CPU 寄存器](#cortex-m-registers)
   - [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
 - [中断与中断嵌套](#interrupts)
-  - [一次中断的流程](#interrupt-lifecycle) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [面试追问](#interrupt-questions)
+  - [一次中断的流程](#interrupt-lifecycle) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [临界区与屏蔽中断](#interrupt-critical-section) · [面试追问](#interrupt-questions)
 - [HardFault 定位](#hardfault)
   - [Keil 排查步骤](#hardfault-steps) · [寄存器现场例子](#hardfault-example) · [容易误判的情况](#hardfault-pitfalls)
 - [Cache 与 DMA](#cache-dma)
@@ -280,6 +280,44 @@ void RxTask(void *arg) {
 
 接收任务原本阻塞等待；ISR 清中断标志并发通知后尽快退出；接收任务先变成 `Ready`，被调度后才解析。通知本身 **不会复制 DMA 缓冲区**，任务读取期间要防止下一次 DMA 覆盖它。`portYIELD_FROM_ISR()` 的名称和要求依移植而定；只有被唤醒的任务应尽快抢占时才需要请求切换。队列、二值信号量、互斥量各自适用的场景见 [FreeRTOS 任务间通信](#freertos-communication)。[FreeRTOS ISR 任务通知示例](https://freertos.org/Documentation/02-Kernel/04-API-references/05-Direct-to-task-notifications/02-vTaskNotifyGiveFromISR)、[中断中发送队列消息](https://www.freertos.org/media/2018/FreeRTOS_Reference_Manual_V10.0.0.pdf)
 
+<a id="interrupt-critical-section"></a>
+### 临界区与屏蔽中断
+
+**临界区**是访问共享数据或设备时，必须作为一个整体完成、不能让其他执行者在中间插入的代码段。它只是需要保护的范围；**屏蔽中断是保护临界区的一种手段**，还可根据访问者选择原子操作、互斥量或消息传递。先弄清“谁会同时访问”，再选保护方式。
+
+**例子：** 脉冲中断每来一次将 `pulse_count` 加一；任务定期读出计数并清零。如果任务读到 5 后，中断把它加到 6，任务才清零，则第 6 次脉冲丢失。即使一次 32 位读写在当前 CPU 上是原子的，**读取和清零这两步合起来也不是原子的**；`volatile` 不能解决这个竞态。
+
+```text
+任务：读到 5 ───────────────→ 清零       结果：报告 5，漏掉新的一次
+                 中断：5 → 6
+```
+
+在单核 Cortex-M 裸机程序中，若只有可屏蔽的中断会修改该变量，可以把两步放在极短的临界区。以下是示意代码，`ClearPulseIrqFlag()` 需换成具体外设的清标志操作：
+
+```c
+#include <stdint.h>
+
+static volatile uint32_t pulse_count;
+
+void Pulse_IRQHandler(void) {
+    ClearPulseIrqFlag();
+    ++pulse_count;
+}
+
+uint32_t take_pulse_count(void) {
+    uint32_t saved_primask = __get_PRIMASK();
+    __disable_irq();                 /* 进入临界区 */
+    uint32_t count = pulse_count;
+    pulse_count = 0;
+    __set_PRIMASK(saved_primask);    /* 恢复进入前的屏蔽状态 */
+    return count;
+}
+```
+
+`PRIMASK` 屏蔽的是 Cortex-M 可配置优先级异常的响应，不能屏蔽 NMI、HardFault，也不会停止 DMA。要恢复**进入前**的屏蔽状态，不能不加判断地打开所有中断；若只需防某一路中断，按平台能力缩小屏蔽范围。临界区应尽量短：里面不要等待、打印或做整笔 I2C 传输，长时间屏蔽会增加中断延迟，某些外设还可能因来不及处理连续事件而丢数据。
+
+在 FreeRTOS 任务中应使用所用移植提供的 `taskENTER_CRITICAL()`／`taskEXIT_CRITICAL()` 等接口，并确认访问该数据的 ISR 确实处于会被这段临界区屏蔽的优先级范围；一些 Cortex-M 移植用 `BASEPRI` 保留更高优先级中断的响应。任务之间长期共用 I2C 总线，通常用[互斥量](#freertos-mutex)保护资源；中断与任务只需传递事件时，也可以用[任务通知](#interrupt-task-communication)。仅屏蔽当前 CPU 的中断不能保护另一个 CPU 核心的访问。
+
 <a id="interrupt-questions"></a>
 ### 常见面试追问
 
@@ -287,7 +325,7 @@ void RxTask(void *arg) {
 | --- | --- |
 | 中断为什么要尽量短？ | 缩短其他中断及任务的等待时间；复杂计算、解析、打印通常放到被通知的任务中。 |
 | 进入 ISR 就一定发生任务切换吗？ | 不一定；进入中断先保存被打断的现场，ISR 退出后调度器也可能继续选择原任务。任务上下文切换见 [任务切换与保存现场](#freertos-context-switch)。 |
-| 中断与任务共用变量怎么处理？ | 核对访问是否原子、是否会读到一半更新的内容，必要时使用临界区或消息传递；`volatile` 不能代替同步，见 [`volatile` 章节](#volatile)。 |
+| 中断与任务共用变量怎么处理？ | 核对访问是否原子、是否会读到一半更新的内容，必要时使用[临界区](#interrupt-critical-section)或消息传递；`volatile` 不能代替同步，见 [`volatile` 章节](#volatile)。 |
 | ISR 怎样把工作交给任务？ | 用符合中断优先级要求的 `...FromISR` API 通知或发送消息；任务等待并完成耗时工作，见 [ISR 与任务通信](#interrupt-task-communication)。 |
 | 为什么中断退出后又立刻进来？ | 排查外设中断标志是否正确清除、触发条件是否仍然有效，以及是否有新的待处理请求。 |
 | 中断优先级设得越高越好吗？ | 不是；高优先级会增加低优先级中断的等待，并影响 FreeRTOS API 能否从该 ISR 调用。 |
