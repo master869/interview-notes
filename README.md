@@ -40,6 +40,7 @@
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
+- [抢占、时间片与协作式调度：四套系统对照](#scheduling-comparison)
 - [Linux 启动、进程与线程](#linux)
   - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [线程池与内存池](#linux-thread-pool) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
@@ -841,7 +842,7 @@ Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路�
 <a id="threadx-smartcard"></a>
 ### ThreadX 与任务同步
 
-ThreadX 是一种嵌入式 RTOS，提供线程、优先级调度、互斥量、事件标志组、消息队列和内存池。任务划分时，先区分“谁执行业务”“谁等待事件”“谁独占外设”；多个任务共用 I2C 总线时要保护访问顺序，等待事件时尽量避免无意义轮询。通用调度、互斥和队列概念也可对照本笔记的 [FreeRTOS 章节](#freertos)，但**ThreadX 和 FreeRTOS 的 API、状态名称及具体机制不能直接画等号**。[Eclipse ThreadX 官方文档](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/threadx/chapter3.md)
+ThreadX 是一种嵌入式 RTOS，提供线程、优先级调度、互斥量、事件标志组、消息队列和内存池。任务划分时，先区分“谁执行业务”“谁等待事件”“谁独占外设”；多个任务共用 I2C 总线时要保护访问顺序，等待事件时尽量避免无意义轮询。通用调度、互斥和队列概念也可对照本笔记的 [FreeRTOS 章节](#freertos)及[四套系统调度对照](#scheduling-comparison)，但**ThreadX 和 FreeRTOS 的 API、状态名称及具体机制不能直接画等号**。[Eclipse ThreadX 官方文档](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/threadx/chapter3.md)
 
 <a id="iso7816-apdu"></a>
 ### ISO7816 与 APDU
@@ -1241,13 +1242,24 @@ void matrix_example(void) {
 
 **面试问题：FreeRTOS 如何选择下一个运行的任务？**
 
-调度器从 **就绪态** 任务中选择优先级最高的任务运行。任务创建时会指定优先级，也可以在运行时通过 `vTaskPrioritySet()` 调整。阻塞或挂起的任务不参与就绪任务的选择。
+调度器从 **就绪态** 任务中选择优先级最高的任务运行；阻塞或挂起的任务即使优先级很高，也不能占用 CPU。FreeRTOS 的**任务**优先级数字越大越高（0 是空闲任务的优先级）；这与常见 Cortex-M NVIC 中断优先级的数字方向不同。[FreeRTOS 任务优先级](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/03-Task-priorities.md)
 
-- **抢占式调度**：启用抢占时，更高优先级任务变为就绪态可触发任务切换。
-- **协作式调度**：任务不会因普通抢占规则自动让出 CPU；任务主动让出、阻塞等情况会引发切换。具体行为取决于 FreeRTOS 配置。
-- **同优先级任务**：是否按时间片轮转受 `configUSE_TIME_SLICING` 等配置影响。时间片不会让较低优先级任务越过持续就绪的高优先级任务。
+**抢占式调度**：当 `configUSE_PREEMPTION=1`，更高优先级任务由 `Blocked` 变为 `Ready` 后，不必等当前任务主动 `yield` 或用完时间片，就可以切换过去。例如低优先级显示任务 A 正在运行，接收任务 B 阻塞等待 DMA 完成；DMA 中断通知 B，B 变为就绪。ISR 结束并允许调度后，若 B 优先级更高，内核保存 A 的现场并运行 B；B 再次等待数据时，A 从暂停处继续。**硬件中断打断 A** 与 **ISR 结束后 B 抢占 A** 是两个不同层次；具体何时请求切换还取决于移植、中断优先级和临界区。[FreeRTOS 调度规则](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling.md)
 
-来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)；调度规则参考 [FreeRTOS 官方文档](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling)。
+**时间片轮转**主要处理**同一最高就绪优先级**上有多个任务的情况。设单核系统中 A、B 同优先级且一直就绪，演示用时间片 10 ms；假设两者从节拍边界开始运行：
+
+| 时间 | 运行任务 | 队列变化 |
+| --- | --- | --- |
+| 0–10 ms | A | A 用完时间片，排到同优先级就绪队列尾部。 |
+| 10–20 ms | B | B 用完时间片，轮到 A。 |
+| 20–30 ms | A | A 从原来暂停的位置继续，不是重新执行任务函数。 |
+| 30–40 ms | B | 继续轮转。 |
+
+若 A 在第 6 ms 等待队列而阻塞，B 可以立即运行，无须等到 10 ms。若第 6 ms 有更高优先级任务 C 就绪，在抢占式配置下 C 也不必等 A 的时间片结束。FreeRTOS 用 `configUSE_TIME_SLICING` 控制是否仅因 tick 到来就轮转同优先级任务；**关闭时间片不等于关闭高优先级抢占**。时间片、抢占和主动阻塞是三种不同原因。[FreeRTOS 配置说明](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/examples/template_configuration/FreeRTOSConfig.h)
+
+**协作式调度**：当 `configUSE_PREEMPTION=0`，任务通常要通过 `taskYIELD()`、阻塞、挂起等方式交出 CPU；更高优先级任务变为就绪，并不按普通抢占规则立刻替换当前任务。**协作式不等于关闭硬件中断**：ISR 仍可打断任务；官方文档还列出 ISR 显式请求上下文切换这一例外。长时间计算而不让出的任务，可能拖住整个任务层的进度。[FreeRTOS 调度规则](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling.md)
+
+**面试易错点：**`taskYIELD()` 不保证低优先级任务运行；若当前任务仍是最高优先级的就绪任务，调度器可以再次选中它。时间片也不能解决这种低优先级饥饿。抢占式系统未必启用同优先级时间片；没有时间片也未必就是协作式系统。四套系统的具体差异见[下方对照](#scheduling-comparison)。
 <!-- TOPIC:freertos-scheduling:END -->
 
 <a id="freertos-task-states"></a>
@@ -1509,6 +1521,37 @@ void DisplayTask(void *arg) {
 
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)、[FreeRTOS MPU 支持](https://www.freertos.org/Security/04-FreeRTOS-MPU-memory-protection-unit)、[Linux pthreads 手册](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
 <!-- TOPIC:freertos-linux-stack:END -->
+
+<a id="scheduling-comparison"></a>
+## 抢占、时间片与协作式调度：FreeRTOS、ThreadX、Zephyr、Linux 对照
+
+**面试问题：用过的 FreeRTOS、Azure RTOS ThreadX 和 Zephyr 都是抢占式系统吗？Linux 中有对应概念吗？**
+
+先统一三个词。**抢占**是当前任务还没有主动结束或让出 CPU，更合适的就绪任务便使调度器切走当前任务；**时间片轮转**通常是在同优先级的多个就绪任务间分配 CPU；**协作式**则主要依靠运行任务主动让出、阻塞或结束，普通高优先级任务就绪本身不会立刻夺走 CPU。是否进入 ISR 与是否发生**任务级**抢占是两件事：协作式任务仍可被硬件中断打断，ISR 返回后未必切到另一个任务。
+
+以单核为例：低优先级任务 A 在运行，高优先级任务 B 等待的数据到达并变成 `Ready`。抢占式模式通常在允许调度时保存 A 的上下文并运行 B；协作式模式通常让 A 继续，直到 A `yield`、等待或结束。若另有与 A **同优先级**的任务 C，时间片到期才可能让 A 和 C 轮转。多核机器上，B 也可能直接在另一空闲核运行，不一定要切走 A。
+
+| 系统 | 抢占与协作 | 同优先级怎样轮转 | 优先级数字 |
+| --- | --- | --- | --- |
+| **FreeRTOS** | 常见配置为固定优先级抢占；`configUSE_PREEMPTION=1` 开启，`0` 可用协作式。 | `configUSE_TIME_SLICING=1` 时可随 tick 在同优先级任务间轮转；关闭后仍可因阻塞、主动 `yield` 等原因切换。 | **越大越高**；任务优先级与 NVIC 中断优先级不是一套编号。 |
+| **Azure RTOS ThreadX（现 Eclipse ThreadX）** | 按固定优先级抢占；可设置 **preemption threshold**，限制哪些较高优先级线程能抢占当前线程。 | 同优先级线程按 FIFO 安排；可用 `tx_thread_relinquish()` 主动让出，或按线程设置时间片。使用抢占阈值的线程不启用时间片。 | **越小越高**，0 为最高。 |
+| **Zephyr** | 同一内核里同时有两类线程：**负数优先级为协作式**，**非负数为可抢占式**。运行中的普通协作式线程通常须自己阻塞或让出；ISR 仍能打断它。 | 可抢占线程可 `k_yield()`；也可配置 `CONFIG_TIMESLICING` 等选项轮转同优先级线程。 | **越小越高**；负数区间对应协作式线程。 |
+| **Linux** | 支持线程抢占，并有不同调度策略。`SCHED_FIFO`、`SCHED_RR` 属实时固定优先级策略；普通程序常用 `SCHED_OTHER` 公平调度；另有 `SCHED_DEADLINE`。 | `SCHED_FIFO` 的同实时优先级线程**无自动时间片**；`SCHED_RR` 才按时间片轮转。`SCHED_OTHER` 不能直接套用固定优先级的简单轮盘模型。 | 实时策略 `SCHED_FIFO/RR` 的静态优先级数字**越大越高**；普通策略不使用这个实时优先级字段。 |
+
+**ThreadX 的抢占阈值例子：**线程优先级为 20（数字小者更高），运行期间把 threshold 设为 15，则优先级 15–19 的线程不能抢占它，0–14 的线程仍可以。它不是把该线程永久改成优先级 15；该机制也会禁用该线程的时间片。[ThreadX 调度与阈值](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/threadx/chapter3.md)
+
+**Linux 中最像 RTOS 的部分：**`SCHED_FIFO` 的高实时优先级线程就绪时可抢占低优先级线程；同优先级不因时间片到期自动切换，直到当前线程阻塞、主动让出或被更高优先级线程抢占。这里的 FIFO 指同一实时优先级就绪队列内的次序，不代表整个 Linux 都采用课本中的 FCFS。`SCHED_RR` 保留优先级规则，增加同优先级的时间片轮转。因此“**没有时间片就是协作式**”是错的，`SCHED_FIFO` 正是反例。普通 `SCHED_OTHER` 则以公平共享 CPU、响应性为目标，并非 FreeRTOS 式的固定优先级支配；Linux 普通调度的内核实现也在从 CFS 向 EEVDF 演进。[Linux `sched(7)`](https://man7.org/linux/man-pages/man7/sched.7.html)、[Linux EEVDF 文档](https://docs.kernel.org/scheduler/sched-eevdf.html)
+
+**再区分 Linux 内核抢占：**用户线程之间能否被调度器换走，与“线程正在执行内核代码时，内核有哪些位置允许抢占”不是同一个问题。`PREEMPT_RT` 通过减少不可抢占区间、线程化大量中断处理等方式降低最坏调度延迟；它不等于给每个普通进程都加上实时保证。任何系统的响应时间还受关中断区间、临界区、锁竞争和上下文切换影响，**支持抢占不等于保证硬实时**。[Linux PREEMPT_RT 原理](https://docs.kernel.org/core-api/real-time/theory.html)
+
+**面试快问快答：**
+
+1. **两任务优先级相同，一定自动轮流执行吗？** 不一定，要看同优先级时间片配置，以及任务是否主动阻塞或让出。
+2. **协作式任务能被 ISR 打断吗？** 能；中断抢占任务代码，不代表 ISR 返回后必然进行任务级切换。
+3. **`SCHED_FIFO` 没有时间片，它是协作式吗？** 不是，更高优先级线程仍能抢占它。
+4. **最高优先级任务一直计算，低优先级任务能靠时间片运行吗？** 在典型固定优先级模型下不能；时间片主要分给同优先级任务。
+
+参考：[FreeRTOS 调度配置](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling.md)、[ThreadX 调度](https://github.com/eclipse-threadx/rtos-docs/blob/main/rtos-docs/threadx/chapter3.md)、[Zephyr 调度](https://docs.zephyrproject.org/latest/kernel/services/scheduling/index.html)与[线程优先级](https://docs.zephyrproject.org/latest/kernel/services/threads/index.html)、[Linux 调度策略](https://man7.org/linux/man-pages/man7/sched.7.html)。
 
 <a id="linux"></a>
 ## Linux 启动、进程与线程
