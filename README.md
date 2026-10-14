@@ -41,7 +41,7 @@
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
 - [Linux 启动、进程与线程](#linux)
-  - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
+  - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [线程池与内存池](#linux-thread-pool) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [驱动开发与调试：SI91x I2C OLED 项目](#driver-experience)
   - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
@@ -1594,6 +1594,29 @@ Linux C 程序常用 `pthread_create(&tid, NULL, worker, arg)`：第一个参数
 
 参考：[Linux `pthread_create(3)`](https://man7.org/linux/man-pages/man3/pthread_create.3.html)、[`pthreads(7)`](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
 <!-- TOPIC:linux-thread-creation:END -->
+
+<a id="linux-thread-pool"></a>
+### 线程池与内存池
+<!-- TOPIC:linux-thread-pool:START -->
+
+**面试问题：线程池是什么，为什么用？可以不用吗？** 线程池是在应用或库中预先创建一些工作线程，把待处理的工作放进任务队列；空闲线程取出一项、执行完后继续等下一项。线程池不是 Linux 内核里一种新的线程类型，工作线程仍由内核调度。
+
+```text
+请求到来 → 任务队列 → 空闲工作线程取任务 → 执行 → 回到池中等待
+```
+
+例如服务器收到很多图片处理请求，可以创建 8 个工作线程，让请求排队、由空闲线程逐个处理，而不是每收到一个请求就创建一个新线程。实际设计还要规定队列满时怎样处理、停止服务时怎样通知线程退出并回收资源。
+
+| 对比 | 线程池 | 内存池 |
+| --- | --- | --- |
+| 复用什么 | 已创建的工作线程。 | 预先分配或集中管理的内存块。 |
+| 主要解决什么 | 减少反复创建与回收线程的开销，限制同时运行的任务数。 | 减少反复申请与释放内存的开销，控制分配延迟，并在合适设计下减轻碎片。 |
+| 取用后做什么 | 把一项工作交给线程执行。 | 从池中取一块空间存放数据，用完归还。 |
+
+**优点与代价：** 线程复用减少频繁创建的成本；固定或受控的线程数能限制线程栈、内存和调度开销；突发工作可以先排队。但线程池**不会让单项计算自动变快**：线程太少会排队，太多会增加调度和内存开销；任务长时间阻塞也可能占满工作线程。工作队列和共享数据仍需同步，并考虑任务失败、排队上限及安全退出。
+
+**可以不用线程池。** 任务很少时，直接在当前线程处理或按需创建线程更简单；大量网络连接也可以用 `epoll` 等事件驱动方式，没必要为每个连接配一个线程。选型要看请求频率、每项工作耗时、是否会阻塞及所需的并发上限。**线程池复用“执行工作的人”，内存池复用“存数据的空间”。** 两者用途不同，也可以同时使用。相关基础见[创建线程](#linux-thread-creation)与[堆内存的申请和释放](#malloc-free)。[Linux `pthread_create(3)`](https://man7.org/linux/man-pages/man3/pthread_create.3.html)、[`epoll(7)`](https://man7.org/linux/man-pages/man7/epoll.7.html)
+<!-- TOPIC:linux-thread-pool:END -->
 
 <a id="threads-vs-processes"></a>
 ### 多线程与多进程
