@@ -39,7 +39,7 @@
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
 - [Linux 启动、进程与线程](#linux)
-  - [嵌入式 Linux 启动主线](#linux-boot) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
+  - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [多线程与多进程](#threads-vs-processes)
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [驱动开发与调试：SI91x I2C OLED 项目](#driver-experience)
   - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
@@ -1475,6 +1475,40 @@ void DisplayTask(void *arg) {
 
 **面试简答：** “上电后 Boot ROM 加载引导程序；需要时先由 SPL 初始化 DDR，再由 U-Boot 加载内核、设备树和可选 initramfs。内核初始化自身与硬件、准备初始根文件系统并启动 PID 1；如有需要，PID 1 再切换到真正的根文件系统，最后拉起系统服务及应用。”
 <!-- TOPIC:linux-boot:END -->
+
+<a id="linux-task-states"></a>
+### Linux 进程与线程的状态
+<!-- TOPIC:linux-task-states:START -->
+
+**面试问题：Linux 进程有哪几种状态？** 教学图常把“就绪、运行、可中断睡眠、不可中断睡眠、暂停、僵尸”分成六个概念状态。Linux 调度的任务也可以是进程中的单个线程；同一进程内不同线程可能处于不同状态。`ps` 显示时，**就绪和正在运行都记为 `R`**，因此不能把六个概念状态当成六个不同的 `ps` 字母。[Linux 内核任务术语](https://docs.kernel.org/accounting/taskstats.html)、[`ps` 状态说明](https://man7.org/linux/man-pages/man1/ps.1.html)
+
+| 概念状态 | `ps` 常见字母 | 含义与例子 |
+| --- | --- | --- |
+| 就绪（Ready） | `R` | 可以运行，正在调度队列中等 CPU。 |
+| 运行（Running） | `R` | 当前正在 CPU 上执行；被抢占后仍可运行。 |
+| 可中断睡眠 | `S` | 等输入、定时器等事件；条件满足或收到可处理的信号时可以被唤醒。这里的“睡眠”不是 CPU 低功耗睡眠。 |
+| 不可中断睡眠 | `D` | 等待某些内核操作或 I/O 条件；普通信号不会立刻让它从等待中退出，通常要等该条件结束。 |
+| 暂停 | `T`；调试器停止时也可能是 `t` | 例如收到 `SIGSTOP` 后停止执行；`SIGCONT` 可使其重新具备运行资格，但不保证立刻占用 CPU。 |
+| 僵尸 | `Z` | 子进程已经退出、不能再执行，但父进程还未回收其退出信息；父进程 `wait()` 后消失。 |
+
+常见状态转换可以按下面的主线记忆；箭头是示意，实际调度与信号处理还有更多细节：
+
+```mermaid
+flowchart LR
+    Ready["就绪 R"] -->|调度选中| Running["运行 R"]
+    Running -->|被抢占或让出 CPU| Ready
+    Running -->|等可中断事件| S["可中断睡眠 S"]
+    Running -->|等不可中断条件| D["不可中断睡眠 D"]
+    S -->|事件或信号唤醒| Ready
+    D -->|等待条件结束| Ready
+    Running -->|停止信号| T["暂停 T"]
+    T -->|SIGCONT| Ready
+    Running -->|退出| Z["僵尸 Z"]
+    Z -->|父进程回收| Gone["状态消失"]
+```
+
+**观察方法：** `ps -e -o pid,stat,comm` 可看进程状态；`ps -L -p PID -o pid,tid,stat,comm` 可看指定进程内各线程的状态。`STAT` 中首字母是主要状态，后面如 `s`、`l` 是附加标记。`I` 表示空闲的内核线程，`X` 表示已死亡且通常很难观察到；面试先讲清 `R、S、D、T、Z` 即可。不要把这套显示字母与 [FreeRTOS 的四种任务状态](#freertos-task-states)逐项画等号。[`/proc/pid/stat` 状态定义](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)
+<!-- TOPIC:linux-task-states:END -->
 
 <a id="linux-thread-stack-size"></a>
 ### 新线程的默认栈大小
