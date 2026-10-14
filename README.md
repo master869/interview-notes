@@ -27,7 +27,7 @@
 - [CRC 校验](#crc)
   - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
 - [Bootloader 与 OTA 升级](#bootloader-ota)
-  - [两者的分工](#bootloader-ota-basics) · [升级时旧应用怎么办](#bootloader-ota-running-app) · [双分区升级流程](#bootloader-ota-flow) · [单应用分区升级](#bootloader-ota-single-slot) · [断电与回滚](#bootloader-ota-recovery) · [面试常见问题](#bootloader-ota-questions)
+  - [两者的分工](#bootloader-ota-basics) · [升级时旧应用怎么办](#bootloader-ota-running-app) · [双分区升级流程](#bootloader-ota-flow) · [确认后的主动回滚](#bootloader-ota-manual-rollback) · [单应用分区升级](#bootloader-ota-single-slot) · [断电与恢复](#bootloader-ota-recovery) · [面试常见问题](#bootloader-ota-questions)
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
@@ -779,6 +779,20 @@ Flash：│ Bootloader │ 应用 A：当前可用 │ 应用 B：下载候选 �
 
 例如显示设备从 A 版升级到 B 版，B 虽能进入 `main()`，但显示任务一直报错。只检查“程序启动了”就确认升级，会让故障固化；把显示初始化、关键配置读取和必要的通信自检纳入确认条件，才有机会在下一次重启时回到 A。
 
+<a id="bootloader-ota-manual-rollback"></a>
+### B 已确认运行，后来发现严重 Bug，怎样主动回滚到 A？
+
+**试运行失败的自动回滚**与**确认后发现业务 Bug 的主动回滚**不同。B 已确认可用后，Bootloader 通常不会判断“功能不好用”；需要有维护入口发起回滚，而且旧版 A 必须仍完整、可启动。典型流程如下：
+
+```text
+运行 B → 收到回滚请求 → 可靠地记录“下次启动 A” → 重启
+       → Bootloader 读取启动状态并验证 A → 选择 A 并启动
+```
+
+Bootloader 不一定要把 A 重新烧录一遍：若设计为两分区直接启动，它选择 A 的入口，完成必要的中断/外设清理、初始栈指针和向量表设置，再跳转到 A 的复位入口。若方案采用 Bank Swap 或镜像交换/复制，则按该方案完成映射或搬运后启动 A。镜像须适配实际运行地址，不能假定把按固定地址链接的程序放进另一个分区就能直接运行。启动选择状态应能承受写入中断电，且回滚前还要检查 A 的有效性、版本安全策略和配置数据兼容性。
+
+**是否需要改 Bootloader 或 B？** 若 Bootloader 原本支持选择 A，且 B 已有接收回滚请求、写启动状态的能力，只需触发该流程，无需重新烧录程序。若 B 没有回滚指令，但 Bootloader 留有独立入口（例如开机按键、维护接口），或可通过调试接口修改启动状态，仍可选择 A。若唯一远程入口在 B、而 B 未实现设置回滚状态的能力，则无法凭空发送回滚命令；需要通过现有升级通道更新 B，或到现场使用恢复入口。若 Bootloader 根本不支持选择 A，仅修改 B 也不够，需先补齐引导方案；修改 Bootloader 本身应特别注意失效后的恢复路径。
+
 <a id="bootloader-ota-single-slot"></a>
 ### Flash 只够放一个应用版本怎么办？
 
@@ -814,6 +828,7 @@ Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路�
 5. **升级到一半断电怎么办？** 先区分断在镜像写入、状态写入还是首次试启动。双分区方案应保留可启动的旧镜像；单应用分区若已擦掉旧镜像，则需靠仍可运行的 Bootloader 继续升级或重新刷入。
 6. **升级准备期间，旧应用要立刻停掉吗？** 不一定。双分区时它通常还要负责下载和校验；切换前再让业务安全停下、保存状态并重启。重启后交由 Bootloader 选择镜像。
 7. **单应用分区能做 OTA 和回滚吗？** 可以由受保护的 Bootloader 进行 OTA 擦写，但若没有保存旧镜像，就不能本地自动回滚；应保留升级失败后重新下载或串口等恢复路径。
+8. **B 已确认，但几天后发现 Bug；B 也没有回滚指令，怎么办？** 先看 Bootloader 是否有独立维护入口能选择仍有效的 A；有则设置下次启动 A 并重启。若只有 B 能远程设置启动状态，而它没有这个功能，就得先通过现有升级通道更新 B，或现场恢复；Bootloader 若不支持选 A，还须补齐引导能力。详见[确认后的主动回滚](#bootloader-ota-manual-rollback)。
 
 **面试简答：** “应用下载新固件到备用区，校验格式、版本、完整性及需要的签名；Bootloader 在重启后试启动新版本。新版本自检成功才确认，否则按回滚规则启动旧版本。重点是断电后仍能确定有效镜像，且不能把 CRC 当作固件来源认证。”
 <!-- TOPIC:bootloader-ota:END -->
