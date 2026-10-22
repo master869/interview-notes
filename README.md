@@ -8,6 +8,8 @@
 
 - [六大内存分区](#memory-layout)
   - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
+- [Cortex-M MCU 上电启动流程](#mcu-boot)
+  - [复位与启动地址](#mcu-boot-reset) · [向量表与第一条指令](#mcu-boot-vector) · [启动代码和变量初始化](#mcu-boot-runtime)
 - [Cortex-M CPU 寄存器](#cortex-m-registers)
   - [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
 - [中断与中断嵌套](#interrupts)
@@ -103,24 +105,7 @@ void draw_page(void) {             // 函数指令通常在 .text
 <a id="memory-startup"></a>
 ### MCU 启动时发生什么？
 
-以**从 Flash 启动的常见 STM32/Cortex-M 裸机工程** 为例，CPU 上电复位后不会直接执行 `main()`：
-
-```text
-上电 → 复位解除，CPU 使用启动时可用的时钟
-  ↓
-从选定启动地址的向量表读取前两项
-  ├─ 第 1 项：初始主栈指针 MSP
-  └─ 第 2 项：复位入口地址 → 进入 Reset_Handler
-  ↓
-Reset_Handler / 运行库启动代码
-  ├─ 把 .data 的初始值从 Flash 复制到 RAM
-  ├─ 把 .bss 清零
-  └─ 完成必要的 SystemInit、运行库初始化等步骤
-  ↓
-调用 main() → 执行业务程序
-```
-
-向量表和 `Reset_Handler` 通常由工程的 `startup_stm32xxx.s` 启动文件提供。下面这份 [ST 官方 STM32G4 启动文件](https://github.com/STMicroelectronics/STM32CubeG4/blob/master/Projects/NUCLEO-G431KB/Templates/STM32CubeIDE/Example/Startup/startup_stm32g431kbtx.s) 就依次列出初始栈地址、`Reset_Handler`，并在复位处理函数中复制 `.data`、清零 `.bss`、调用 `SystemInit` 和运行库初始化函数，最后进入 `main`。**这些初始化步骤的具体顺序以工程启动文件为准**；上电时 CPU 可先用默认启动时钟，业务需要的系统时钟配置不必都在 `main()` 之前完成。
+以**从 Flash 启动的 STM32/Cortex-M 裸机工程**为例，CPU 不会在复位后直接进入 `main()`。它先按向量表找到 `Reset_Handler`；启动代码准备 C 运行环境，将 `.data` 的初值从 Flash 复制到 RAM、将 `.bss` 清零，然后才调用 `main()`。复位地址、汇编启动文件和完整时间线见 [Cortex-M MCU 上电启动流程](#mcu-boot)。
 
 ```text
 Flash / ROM                           RAM
@@ -134,7 +119,7 @@ Flash / ROM                           RAM
 
 例如 `int count = 10;` 是可写且有非零初值的全局变量，启动代码通常把它的初值从 Flash 复制到 RAM；`int flag;` 是未显式初始化的全局变量，启动代码通常把它清零。上面的 `global_level` 和 `global_error` 也是同一原理。`.data` 的初值通常同时占用固件映像空间和运行时 RAM；`.bss` 主要占用运行时 RAM。具体地址要看链接脚本或 map 文件。[GNU 链接器的 ROM/RAM 示例](https://sourceware.org/binutils/docs/ld.html)
 
-`HAL_Init()` 和项目里的 `SystemClock_Config()` 若写在 `main()` 开头，就是 **进入 `main()` 后** 才执行；不要把它们和启动文件中的 `SystemInit()` 混为一谈。若选择芯片 ROM Bootloader 启动，或产品有[自定义 Bootloader](#bootloader-ota)，则要先经过相应引导流程，再进入应用固件的启动过程。
+`HAL_Init()` 和项目里的 `SystemClock_Config()` 若写在 `main()` 开头，就是 **进入 `main()` 后** 才执行；不要把它们和启动文件中的 `SystemInit()` 混为一谈。
 
 <a id="memory-questions"></a>
 ### 面试常见追问
@@ -147,6 +132,63 @@ Flash / ROM                           RAM
 
 **一句话复述：** `.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
 <!-- TOPIC:memory-layout:END -->
+
+<a id="mcu-boot"></a>
+## Cortex-M MCU 上电启动流程
+<!-- TOPIC:mcu-boot:START -->
+
+**适用范围：**这里以 **STM32F103/Cortex-M3 从主 Flash 启动的裸机程序**为例，讲的是 MCU 复位到进入应用 `main()` 的过程。运行 FreeRTOS 的 Cortex-M 工程通常也先经过本段启动代码，再由应用创建任务、启动调度器。其他嵌入式 CPU 的复位入口和引导阶段可能不同；[嵌入式 Linux SoC 的启动主线](#linux-boot)另有 Boot ROM、可选的 SPL、U-Boot、内核和用户空间，不能套用这张 MCU 向量表流程。
+
+```text
+上电或其他复位来源 → 复位解除，芯片确定启动存储器
+  ↓
+CPU 读取初始向量表：第 1 项装入 MSP，第 2 项给出 Reset_Handler 地址
+  ↓
+CPU 到 Reset_Handler 所指地址执行第一条指令
+  ↓
+启动代码／C 运行库：复制 .data、清零 .bss，做必要的系统和运行库初始化
+  ↓
+调用 main() → 初始化业务外设、运行裸机循环或启动 RTOS
+```
+
+<a id="mcu-boot-reset"></a>
+### 复位来源与启动地址：`0x00000000` 为什么能读到 Flash？
+
+常见复位来源包括**上电复位**（POR/PDR）、`NRST` 被拉低的**外部复位**、IWDG 超时的**看门狗复位**，以及程序请求的**软件复位**（例如 `NVIC_SystemReset()`）。这四种不是全部来源；STM32F103 还有窗口看门狗等。复位后可尽早读取 `RCC_CSR` 的复位标志，记录后清除，以便排查重启原因。[ST STM32F1 参考手册：复位来源与标志](https://www.st.com/resource/en/reference_manual/cd00171190.pdf)
+
+**复位不等于断电。** 若供电保持，普通 SRAM 的电路内容可能保留；但应用重新启动时仍会再次初始化普通 `.data` 和 `.bss`，所以不能依靠普通全局变量跨看门狗／软件复位保存值。要保留信息，需按芯片和链接配置专门设计不初始化区域，并验证数据有效性。[ST STM32CubeIDE 内存段说明](https://www.st.com/content/ccc/resource/technical/document/user_manual/group1/f8/a2/48/77/68/e6/4b/74/DM00629856/files/DM00629856.pdf/jcr%3Acontent/translations/en.DM00629856.pdf)
+
+在这个 **STM32F103 主 Flash 启动**例子里，主 Flash 的常规起始地址是 `0x08000000`；启动配置使它的开头同时映射到 `0x00000000`。CPU 发出对 `0x00000000` 的读取时，芯片内部地址映射硬件把请求导向主 Flash 开头：**两个地址访问同一份内容，并没有把整段 Flash 复制到零地址。** 烧录和链接通常使用 Flash 的常规地址 `0x08000000`；若选系统存储器启动，零地址则映射到另一处启动存储器。[ST STM32F1 参考手册：Boot configuration](https://www.st.com/resource/en/reference_manual/cd00171190.pdf)
+
+<a id="mcu-boot-vector"></a>
+### 向量表和第一条指令
+
+向量表通常放在启动映像的开头。对上面的主 Flash 启动例子：
+
+| 启动时读取的地址 | 主 Flash 中的对应位置 | 内容和用途 |
+| --- | --- | --- |
+| `0x00000000` | `0x08000000` | 初始**栈顶地址**，硬件装入主栈指针 `MSP`；这里放的是地址值，栈本体在 RAM。 |
+| `0x00000004` | `0x08000004` | **`Reset_Handler` 的入口地址**，硬件据此设置执行位置。 |
+| 后续表项 | Flash 中的后续表项 | NMI、HardFault、外设中断等处理函数入口。 |
+
+**零地址处不是第一条指令，`0x00000004` 处也不是指令。** 它们存的是启动所需的地址值；CPU 跳到 `Reset_Handler` 指向的位置后，才在那里读取并执行第一条汇编指令。ST 的启动文件把初始栈顶和 `Reset_Handler` 放在向量表前两项。[Arm 对 Cortex-M 向量表的解释](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/decoding-the-startup-file-for-arm-cortex-m4) · [ST STM32F103 启动文件](https://github.com/STMicroelectronics/STM32CubeF1/blob/master/Projects/STM32F103RB-Nucleo/Examples/GPIO/GPIO_IOToggle/SW4STM32/startup_stm32f103xb.s)
+
+<a id="mcu-boot-runtime"></a>
+### 启动文件里的汇编做什么？谁把变量搬进 RAM？
+
+`startup_stm32xxx.s` 一般定义**向量表、`Reset_Handler`、默认中断处理函数**，并把执行流程交给系统初始化和 C 运行库。链接脚本决定代码、向量表、`.data` 初值在 Flash 的位置，以及 `.data`、`.bss` 在 RAM 的位置；启动代码使用这些地址。真正执行复制的是 **CPU 按启动代码或运行库指令读取 Flash、写入 RAM**，不是向量表在搬运。[ST STM32F103 启动文件](https://github.com/STMicroelectronics/STM32CubeF1/blob/master/Projects/STM32F103RB-Nucleo/Examples/GPIO/GPIO_IOToggle/SW4STM32/startup_stm32f103xb.s)
+
+```c
+int count = 10;  // 通常在 .data：Flash 保存初值 10，运行时变量在 RAM
+int flag;        // 通常在 .bss：启动时对应的 RAM 区域被清零
+```
+
+从用途看，复制循环需要三个地址：**Flash 中 `.data` 初值起点、RAM 中 `.data` 起点、RAM 中 `.data` 终点**。它依次读取、写入，到终点停止；随后把 `.bss` 对应的 RAM 范围写零。启动文件中的 `LDR`、`STR` 等汇编就是在做这些读写。运行库初始化、`SystemInit()` 和 `main()` 也在这条调用链上。**具体顺序以工程和工具链为准**：ST 的一份 GCC 启动文件在 `Reset_Handler` 中直接复制 `.data`、清 `.bss`，再调用 `SystemInit()`、`__libc_init_array()` 和 `main()`；某些 Arm/Keil 工程则由 `__main` 运行库入口完成数据装载，`__main` 不是用户写的 `main()`。[ST 启动文件实例](https://github.com/STMicroelectronics/STM32CubeF1/blob/master/Projects/STM32F103RB-Nucleo/Examples/GPIO/GPIO_IOToggle/SW4STM32/startup_stm32f103xb.s) · [Arm 对 `__main` 的说明](https://developer.arm.com/community/arm-community-blogs/b/tools-software-ides-blog/posts/migrate-to-arm-compiler-6-from-gcc)
+
+`SystemInit()` 也不意味着每个项目都在此时切到 HSE＋PLL、固定运行在 72 MHz；芯片先使用复位后可用的默认时钟，具体时钟方案看工程配置。若 `HAL_Init()` 和 `SystemClock_Config()` 写在用户的 `main()` 中，它们就在**进入 `main()` 后**才执行。若选择片上 ROM Bootloader，或 Flash 中先运行[自定义 Bootloader](#bootloader-ota)，进入应用的 `Reset_Handler` 前还会多一段引导流程。
+
+**面试回答：**“以 STM32F103 从主 Flash 启动为例，复位时 Flash 开头映射到零地址；CPU 从向量表取初始 MSP 和 `Reset_Handler` 地址，跳到复位处理函数执行启动代码。启动代码或 C 运行库按链接结果复制 `.data`、清零 `.bss`，完成必要初始化，最后调用 `main()`。这不是所有嵌入式 CPU 通用的启动链路。”
+<!-- TOPIC:mcu-boot:END -->
 
 <a id="cortex-m-registers"></a>
 ## Cortex-M CPU 寄存器
