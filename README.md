@@ -23,7 +23,7 @@
 - [I2C 总线与显示屏通信](#i2c)
   - [基础时序](#i2c-signals) · [7 位地址与设备数量](#i2c-address-count) · [显示屏写入与寄存器读取](#i2c-examples)
 - [SPI 通信](#spi)
-  - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions)
+  - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions) · [I2C 与 SPI 的通信距离](#spi-i2c-distance)
 - [UART 串口通信](#uart)
   - [一字节时序与 8N1](#uart-frame) · [接收与业务帧解析](#uart-reception) · [排障要点](#uart-debug) · [面试常见问题](#uart-questions)
 - [CAN 总线基础](#can)
@@ -655,6 +655,22 @@ SPI 是 **由主控提供时钟的同步串行通信**。以常见的四线连�
 7. **SPI 比 I2C 快就一定更合适吗？** 不一定。SPI 通常布线和片选更多，缺少统一的寻址和 ACK；I2C 只需共享两根信号线，适合多个低速设备。选择取决于带宽、引脚、布线、设备协议等要求。
 
 参考：[Analog Devices：SPI 基础、全双工与模式表](https://www.analog.com/en/resources/analog-dialogue/articles/introduction-to-spi-interface.html)；[Microchip：SPI 时钟模式说明](https://onlinedocs.microchip.com/oxy/GUID-76938A18-C47D-4351-9D02-463E8A957829-en-US-8/GUID-D8B41778-0B24-41AB-AB85-5F5130FB7D87.html)。
+
+<a id="spi-i2c-distance"></a>
+### I2C 与 SPI 的通信距离怎么比较？
+
+**面试问题：SPI 通常更快，是否也能传得更远？两者分别能传多少米？** 常规 MCU 引脚直接连接的 I2C、SPI 多用于板内或短距离互连；两者都不能只凭协议名称给出固定的可靠距离，也不能从 SPI 时钟通常更高就推导出它传得更远。
+
+| 接口 | 线变长后主要要检查什么？ |
+| --- | --- |
+| I2C | 线缆和更多节点增加总线电容，上拉电阻与电容影响上升时间；若在采样前仍未达到有效高电平，就可能通信失败。上拉阻值还受器件拉低电流能力约束，不能无限减小。 |
+| SPI | 线缆、负载和支线影响波形，反射、串扰以及传播延迟可能破坏建立／保持时间。读数据还要考虑 SCLK 到设备、设备输出 MISO、MISO 返回主控的整段延迟。 |
+
+例如 SPI 时钟为 10 MHz，一个周期只有 100 ns；线缆、器件响应和采样要求都要放进这个时间预算。降低时钟有时可以增加时序余量，但不能自动消除反射、干扰、地电位差等电气问题。I2C 的上升时间问题也不能单靠“降低软件读写频率”解决，要区分总线 SCL 频率与应用访问频率。
+
+需要跨较长线缆时，应评估专用缓冲／扩展器或差分传输方案，并明确条件：时钟、线缆及拓扑、器件负载、电平和环境。使用专用扩展器实现的距离，不能直接当作普通 I2C／SPI 引脚直连能力。验证时在接收端观察波形与时序，检查 I2C 上升时间及应答、SPI 返回数据采样余量，并在目标速率和实际负载下持续收发、检查数据错误；SPI 没有统一的每字节 ACK，可按设备协议读回或校验。
+
+参考：[TI：I2C 距离、总线电容与扩展方法](https://www.ti.com/lit/an/sdaa306/sdaa306.pdf)；[Analog Devices AN-1478：SPI 往返传播延迟与时钟约束](https://www.analog.com/en/resources/app-notes/an-1478.html)。
 <!-- TOPIC:spi:END -->
 
 <a id="uart"></a>
