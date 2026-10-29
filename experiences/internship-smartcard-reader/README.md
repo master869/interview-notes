@@ -28,6 +28,11 @@
   - [5.1 材料记录的设计](#pps-design)
   - [5.2 接口和 C 语言细节](#flash-c-details)
   - [5.3 文档片段中需要继续核实的风险](#flash-risks)
+  - [5.4 双 Bank 与 EDATA 参数布局](#flash-bank-edata)
+  - [5.5 EDATA 与 EEPROM 的区别](#edata-vs-eeprom)
+  - [5.6 EDATA 与 QuadWord：需要核对的版本差异](#edata-programming-check)
+  - [5.7 擦写寿命、计数单位与寿命预算](#flash-endurance)
+  - [5.8 参数更新、磨损均衡与掉电恢复](#flash-update-recovery)
 - [6. CDC 到 USBX-CCID 迁移](#ccid-migration)
   - [6.1 64 字节 Bulk 接收阻塞](#usb-64-byte-debug)
 - [7. 模块化设计与个人回答](#modular-design)
@@ -363,6 +368,8 @@ app_ux_device_thread_entry
 
 Flash 说明记录：启动时由 `DhVarInit()` 加载参数；旧方案由后台线程检查全局请求标志并异步写入，新方案将保存同步放入私有指令处理链。参数涉及 PPS 开关及波特率档位；运行时用同步对象保护访问。
 
+下列流程对应说明中的标准 QuadWord 编程版本；本轮本人另补充了 Bank2 EDATA 参数布局，两者是否对应不同版本或配置，见 [5.6](#edata-programming-check)，目前不合并成一套已核实实现。
+
 ```text
 配置请求 → 长度／参数范围检查 → 组织新参数
  → 取得 Flash 锁 → 读取旧内容 → 修改目标字段
@@ -377,7 +384,7 @@ Flash 说明记录：启动时由 `DhVarInit()` 加载参数；旧方案由后�
 
 - `Flash_Word_Read(addr, &value)` 通过输出指针回填读取结果；这不是申请堆内存。
 - `Flash_Page_Erase()` 包装解锁、擦除配置、HAL 调用及错误检查；实际擦除单位要以 H563 手册为准，不能只看函数名“Page”。
-- `Flash_Word_Write()` 将一个 32 位业务参数装入 16 字节缓冲区，再调用 QuadWord 编程。**业务参数大小与硬件编程粒度不同。**
+- 旧说明中的 `Flash_Word_Write()` 将一个 32 位业务参数装入 16 字节缓冲区，再调用 QuadWord 编程。**业务参数大小与硬件编程粒度不同；此处不能直接作为 EDATA 的编程方式。**
 - 文档中的 `static ... quad_buf[4]` 具有静态存储期，不依赖函数栈帧；它在调用间共享，所有并发访问要按同一同步规则保护。
 - `volatile` 地址读取限制编译器优化，不等于关闭硬件 Cache。缓存维护和编程后可见性应按实际芯片配置处理。
 
@@ -397,6 +404,134 @@ Flash 说明记录：启动时由 `DhVarInit()` 加载参数；旧方案由后�
 | 擦除后写入前掉电。 | 有效旧参数是否已经丢失？ | 双记录／双区、序号、有效性校验和提交标记等方案。 |
 
 “断电后正常重启能读回”与“任意写入时刻掉电均能恢复”是两种不同承诺。启动阶段无需锁的理由是确认不存在并发访问，不是“读操作天然不需要同步”；已有说明中的启动与运行时并发描述也需核对时序。
+
+<a id="flash-bank-edata"></a>
+
+### 5.4 双 Bank 与 EDATA 参数布局
+
+**本人补充的项目布局：程序放 Bank1，Bank2 末尾的 EDATA 用于参数保存。** 这是本轮新增的项目说明；确切参数地址、启用扇区数及 Option Bytes 尚未核验。另需与旧 Flash 说明的 QuadWord 版本对齐，见 [5.6](#edata-programming-check)。
+
+STM32H563ZI 标称 2 MB Flash，分为两个各 1 MB 的 Bank。Bank 可以理解为芯片内部能配合执行读写操作的两个存储分区，不是两颗外接 Flash，也不是一个存程序、另一个就天然变成 EEPROM。
+
+```text
+片内 Flash（按本人描述的用途示意，不代表已核验链接地址）
+├─ Bank1
+│    └─ 应用、ThreadX、USBX、HAL 与业务代码
+└─ Bank2
+     ├─ 其他普通 Flash 空间
+     └─ 末尾配置为 EDATA 的区域
+          └─ PPS 开关、波特率等持久化参数
+```
+
+双 Bank 的重要能力是 RWW（Read-While-Write）：在一个 Bank 擦除或编程时，可以读取另一个 Bank。因此，把执行代码放 Bank1、把需更新的数据放 Bank2，有利于减少擦写参数对程序取指的影响。但驱动忙等、临界区、锁等待，以及对正在擦写 Bank 的其他访问，仍可能影响响应；不能说保存参数对实时性完全无影响。
+
+EDATA 是 **Flash 的高耐久数据区**，不是额外附送的独立 EEPROM。对 H563ZI，每个 Bank 最多可将末尾 8 个扇区配置成高耐久数据区；配置后每扇区提供 6 KB 数据容量，每 Bank 最多 48 KB，两个 Bank 合计最多 96 KB。这些容量来自对现有 Flash 的配置，不是另加到标称 2 MB 上。
+
+普通扇区为 8 KB，EDATA 模式使用不同的 ECC 组织后，可用数据容量为每扇区 6 KB；支持最小 16 bit 的数据编程粒度。若项目只启用最后一个扇区，对应的是 6 KB EDATA，而不是 48 KB，也不是整个 Bank2。
+
+EDATA 通过 Option Bytes 中的 `EDATA1_EN`／`EDATA2_EN` 和 `EDATA1_STRT`／`EDATA2_STRT` 配置。启用后通过专用数据地址窗口访问；地址映射还与 Bank 交换配置有关，不能直接套用普通 Flash 末尾地址。EDATA 用于数据访问，不能作为普通指令执行区。
+
+依据：[H563 数据手册 §3.4](https://www.st.com/resource/en/datasheet/stm32h563zi.pdf)、[ST AN4894 高耐久数据区说明](https://www.st.com/content/st_com/en/technical-documents/an4894-how-to-use-eeprom-emulation-on-stm32-mcus-stmicroelectronics_asset/chunk-003-topic-an4894-high-cycle-data-area-of-flash-memory.html)。
+
+<a id="edata-vs-eeprom"></a>
+
+### 5.5 EDATA 与 EEPROM 的区别
+
+用途相似：都可保存掉电后仍需保留的小量参数。区别在于 EDATA 仍受 Flash 的擦除／编程规则约束，而常见专用 EEPROM 给应用提供字节写、页写等接口，内部完成相应写周期。
+
+| 对比项 | H563 EDATA | 典型专用 EEPROM，以 M24C64 为例 |
+| --- | --- | --- |
+| 存储实现 | MCU 片内高耐久 Flash 区域。 | 独立 EEPROM 器件，通过 I2C 访问。 |
+| 小量写入 | 支持最小 16 bit 编程粒度，需遵循对齐和编程规则。 | 提供字节写和页写接口。 |
+| 擦除管理 | 仍按扇区擦除，需由软件保存其他有效数据并管理更新。 | 用户通常不需先发送整扇区擦除命令，器件内部执行写周期。 |
+| 掉电保持 | 正常完成保存后可保留数据。 | 正常完成保存后可保留数据。 |
+| 更新时掉电 | 需设计提交和恢复机制。 | 同样不能默认一组参数更新具有事务原子性。 |
+| 类似 EEPROM 的接口 | 可由软件在 EDATA 上封装实现。 | 器件本身提供相应读写接口。 |
+
+EEPROM 的“页写”也不等于 Flash 的“扇区擦除”：前者是一次写入多个字节的接口方式，具体页边界和内部更新单位由器件定义。参考 [M24C64 数据手册的写操作章节](https://www.st.com/resource/en/datasheet/m24c64-w.pdf)。
+
+**启用 EDATA 不等于已经实现 EEPROM 仿真算法。** ST 的 X-CUBE-EEPROM 是在 Flash／EDATA 上提供记录管理、多页迁移、磨损均衡及掉电恢复的软件方案；当前项目是否采用该库，尚未确认，不能把这些能力直接写成已有实现。
+
+<a id="edata-programming-check"></a>
+
+### 5.6 EDATA 与 QuadWord：需要核对的版本差异
+
+本人整理的《RCREADER_FLASH读写软件设计说明》第 9 页 §4.4 写明：采用标准 QuadWord、16 字节对齐写入，并屏蔽 EDATA 模式逻辑；第 10 页代码使用 `FLASH_TYPEPROGRAM_QUADWORD`。这与本轮补充的“实际使用 Bank2 EDATA”存在需要核对的配置／版本差异，目前不据此判定哪一个描述代表最终固件。
+
+ST HAL 对两类编程路径作了区分：
+
+```c
+FLASH_TYPEPROGRAM_QUADWORD        /* 普通 Flash：128 bit，16 字节 */
+FLASH_TYPEPROGRAM_HALFWORD_EDATA  /* EDATA：16 bit，2 字节 */
+FLASH_TYPEPROGRAM_WORD_EDATA      /* 当前 HAL 还提供 EDATA 的 32 bit 编程路径 */
+```
+
+这是编程类型对照，不是可直接复制执行的写入代码。接口是否具备某个宏，以及对齐、地址和数据指针要求，需按项目 HAL 版本与手册确认，不能把普通 Flash 的 QuadWord 参数原样套到 EDATA。
+
+确认实际方案需要一起看：
+
+1. 参数区地址宏，如 `FLASH_PAGE_START_ADDR`，以及链接布局是否正确预留。
+2. `EDATA2_EN`、`EDATA2_STRT` 和 Bank 交换等 Option Bytes。
+3. `HAL_FLASH_Program()` 的实际 `TypeProgram` 及调用地址。
+4. 擦除使用的物理 Bank、扇区号和配置后的数据容量是否一致。
+
+**仅在 Bank2 最后留一个参数扇区，不等于已经启用硬件 EDATA。** 面试时应按核实后的版本说明。HAL 依据：[ST 官方 Flash 驱动](https://github.com/STMicroelectronics/stm32h5xx-hal-driver/blob/main/Src/stm32h5xx_hal_flash.c)。
+
+<a id="flash-endurance"></a>
+
+### 5.7 擦写寿命、计数单位与寿命预算
+
+针对本芯片，可先记“普通 Flash 1 万次、EDATA 10 万次”；专用 EEPROM 常有百万次级指标，但必须看确切型号和条件，不能概括所有 Flash 或所有 EEPROM。
+
+| 存储类型／型号 | 官方耐久度指标 | 条件与理解 |
+| --- | --- | --- |
+| STM32H563 普通程序 Flash | 10,000 次擦写循环。 | 数据手册表 52，结温范围 −40～+130°C 下的耐久度指标。 |
+| STM32H563 高耐久数据区 EDATA | 100,000 次擦写循环。 | 同表规定条件下的数据存储区指标；必须确认启用了相应模式。 |
+| Microchip AT24C64B EEPROM | 1,000,000 次写循环。 | 表 4-6：25°C、3.3 V、页写模式。 |
+| ST M24C64 EEPROM | 4,000,000 次写循环；85°C 时为 1,200,000 次。 | 表 14：前者为环境温度不高于 25°C，电压处于规定范围；具体器件工艺和内部计数单位还需看注释。 |
+
+来源：[H563 数据手册表 52](https://www.st.com/resource/en/datasheet/stm32h563zi.pdf)、[AT24C64B 数据手册表 4-6](https://ww1.microchip.com/downloads/en/DeviceDoc/AT24C64B-Data-Sheet-20006188A.pdf)、[M24C64 数据手册表 14](https://www.st.com/resource/en/datasheet/m24c64-w.pdf)。这些数值的测试／规定条件不同，不能脱离温度等条件做完全等价的倍数比较。
+
+**不是整颗芯片共用一个“剩余写入次数”。** 对 Flash，主要关注同一个物理擦除扇区反复经历擦除、编程的次数；一个扇区被反复擦写，不会直接扣除其他未反复擦写区域的次数。EEPROM 则按厂家规定的字节、页或内部存储分组评估；例如带 ECC 的部分器件还涉及四字节分组，不能统一假设每次只磨损一个字节。
+
+普通读取不计入这里的擦写循环；一次应用层“参数更新”也不一定等于一次物理擦除，取决于是否原位擦写、是否追加记录以及何时回收扇区。
+
+下面假设**每保存一次，都擦除并重写同一个扇区**，仅按循环额度计算：
+
+| 保存频率 | 普通 Flash：1 万次 | EDATA：10 万次 |
+| --- | --- | --- |
+| 每天 100 次 | 约 100 天。 | 约 1,000 天，约 2.7 年。 |
+| 每分钟 1 次，全天运行 | 约 6.9 天。 | 约 69 天。 |
+
+这是教学预算，不是本项目的实测保存频率，也不是某一天必然损坏。PPS 开关和波特率若只在用户修改配置时保存，频率可能很低；若每次通信甚至每次循环都保存，同一扇区的额度就可能很快用完。不能只用“10 万次看起来很多”来判断寿命。
+
+擦写耐久度与数据保持时间不同：前者是可更新多少轮，后者是写完后能保存多久。温度和已经经历的循环次数会影响保持能力；高耐久也不等于无限期保持、抗任意掉电或免除校验。
+
+<a id="flash-update-recovery"></a>
+
+### 5.8 参数更新、磨损均衡与掉电恢复
+
+若同一扇区有多个有效参数，修改其中一个时采用原位保存，需要保留全部其他有效内容：
+
+```text
+读出需要保留的有效参数 → 在 RAM 中修改目标字段
+ → 擦除参数扇区 → 按对应模式编程完整有效参数
+ → 检查返回值及保存结果 → 按约定返回成功／失败
+```
+
+“读一个参数，擦整个扇区，只写回这一个参数”可能丢失同扇区其他配置。即便已保存全部参数，这种单区读改擦写也有“旧数据已擦除、新数据尚未写完”的掉电窗口，不能直接宣称掉电安全。
+
+可以考虑的优化方向，均未确认项目已经实现：
+
+- 参数未变化就不写，合并短时间内的重复修改，减少无效保存。
+- 在空白位置追加新记录，例如“版本、序号、参数、校验”，不在每次更新时都擦除。
+- 使用不同擦除扇区保存新旧有效记录；新记录写入并校验、提交后，才允许回收旧记录所在扇区。不能把仅在同一扇区存两份记录直接当成完整掉电恢复。
+- 有效提交标记按独立编程单元设计并最后写入，避免反复编程同一 ECC 单元；启动时按有效性和序号选择记录，处理写入中断和擦除中断。
+- 定期迁移／轮换使用扇区，分散擦除次数，并测量最坏保存时延和失败恢复路径。
+
+ST 的 [EEPROM 仿真方案 AN4894／X-CUBE-EEPROM](https://www.st.com/resource/en/application_note/dm00311483-eeprom-emulation-techniques-and-software-for-stm32-microcontrollers-stmicroelectronics.pdf)提供多页管理与相关软件机制，可作为学习参考，不能在未集成和验证时宣称项目具备同等保证。
+
+面试时明确区分两个承诺：“正常保存完成后断电，重启能读回”证明了持久化；“擦除／编程任意时刻断电都能恢复有效配置”还需恢复算法、供电条件和针对性的断电测试证据。
 
 <a id="ccid-migration"></a>
 
@@ -459,6 +594,7 @@ Flash 说明记录：启动时由 `DhVarInit()` 加载参数；旧方案由后�
 - [ ] ThreadX／USBX 版本，线程创建、栈高水位、池容量依据。
 - [ ] I2C、Flash 同步宏的类型和继承配置；事务结束与释放时机。
 - [ ] PPS 最终错误处理、空白数据校验、断电策略及验证结果。
+- [ ] Bank2 参数实际地址、EDATA Option Bytes、HAL 编程类型及版本；核对旧 QuadWord 说明与当前实现，确认扇区容量、保存频率和耐久度预算。
 - [ ] CDC 与 CCID 两阶段的帧边界、回调和缓冲区生命周期。
 - [ ] 64 字节问题的原始日志、代码差异与回归测试。
 - [ ] 选一个真实定位案例，整理成两分钟可追问的回答。
@@ -479,6 +615,8 @@ Flash 说明记录：启动时由 `DhVarInit()` 加载参数；旧方案由后�
 2026-10-29，在文末增加 ThreadX 多任务架构维护相关的 24 道面试问题与简答；目录仅增加集合入口。
 
 2026-10-29，在 §3.2 补充 I2C／Flash 互斥、USB 完整收包事件通知、PD 到 USB 管理线程启停队列的具体场景、文档依据与源码核对项。
+
+2026-10-29，在 §5.4–5.8 补充双 Bank／EDATA、EEPROM 对比、QuadWord 配置差异、耐久度及寿命预算，以及参数更新与掉电恢复设计；新增对应目录入口。
 
 <a id="interview-question-collection"></a>
 
