@@ -35,6 +35,8 @@
   - [5.8 参数更新、磨损均衡与掉电恢复](#flash-update-recovery)
 - [6. CDC 到 USBX-CCID 迁移](#ccid-migration)
   - [6.1 64 字节 Bulk 接收阻塞](#usb-64-byte-debug)
+  - [6.2 USB 设备枚举：电脑如何认出读卡器？](#usb-enumeration)
+  - [6.3 USB 总线在读卡器中具体怎样使用？](#usb-reader-usage)
 - [7. 模块化设计与个人回答](#modular-design)
 - [8. 面试追问卡片](#interview-questions)
 - [9. 后续深挖清单](#next-steps)
@@ -539,6 +541,8 @@ ST 的 [EEPROM 仿真方案 AN4894／X-CUBE-EEPROM](https://www.st.com/resource/
 
 这是简历中独立的一条工作线，不能把 CDC 工程说明直接当成最终 CCID 架构。
 
+按简历的“USB CDC → USBX-CCID”表述，CDC 阶段已经通过 USB 连接电脑，只是在软件上呈现为虚拟串口。迁移的重点是从“虚拟串口＋自定义业务协议”转向标准智能卡设备类，便于 Windows 通过智能卡驱动和应用接口使用读卡器；不能直接称为“UART 硬件改成 USB”。若更早确有 UART 版本，应另行分阶段说明。
+
 - CDC 提供虚拟串口通道，业务通常自行定义帧协议与组包。
 - CCID 提供智能卡设备类命令与响应，主机请求进入设备类处理后再映射业务。
 - 简历列出 `XfrBlock` 处理卡片传输、`Escape` 承载相应私有扩展；具体支持、权限、输入输出和缓冲区归属待核实。
@@ -546,15 +550,84 @@ ST 的 [EEPROM 仿真方案 AN4894／X-CUBE-EEPROM](https://www.st.com/resource/
 
 <a id="usb-64-byte-debug"></a>
 
-### 6.1 “64 字节 Bulk 接收阻塞”怎样准备？
+### 6.1 64 字节 Bulk 阻塞：简要复盘
 
-当前只能确认简历提出过这个问题，缺少故障日志与最终改动，**不能预先认定是少发 ZLP，也不能认定是 USBX 的 Bug**。
+**本人回忆的现象：** CDC 向 CCID 迁移后，电脑端输入某个“64 字节指令”会出现等待不返回。当前未找到原始调试日志和修复补丁，尚不能确认 64 指 APDU 还是完整 USB／CCID 报文，也不能把以下复盘方法说成自己当时逐步执行过的定位过程。
 
-1. 先确认 USB 速度、端点最大包长，以及 64 指的是 USB 包、类消息、缓冲区还是实际业务长度。
-2. 同时记录主机请求长度、设备请求接收长度和 actual length；区分 USB packet、一次 transfer 与完整 CCID 消息。
-3. 在临界长度前后、以及最大包长整数倍附近对照，确认停在 USB 层、类层回调还是业务等待。
-4. 核对协议声明长度、组包状态、缓冲区容量、超时与应答；是否需要短包／ZLP，要结合具体传输方向和结束条件判断。
-5. 最终补“原始现象 → 日志证据 → 根因 → 修改 → 边界回归”，再写成亲历案例。
+理解主线：端点最大包长若为 64 字节，收到 64 字节只是收到一个满包。若接收请求还期待更多数据，又没有满足短包结束条件，就可能继续等待，导致业务回调未执行、电脑收不到应答。若已收够请求长度，则不能单凭满包判断一定缺少 ZLP；响应方向的结束条件也要检查。
+
+定位过程只需掌握三步：
+
+1. 对比完整报文在 63／64／65 字节附近的表现，观察是否与满包边界有关。
+2. 用日志或断点检查 USB 接收是否返回、`XfrBlock`／`Escape` 是否进入、响应是否发送，确定卡在哪一层。
+3. 核对请求长度、实际长度及短包／ZLP 处理，按证据修改后回归边界长度和连续命令；具体历史改动仍待找回。
+
+CCID 消息有 10 字节头，因此 64 字节 APDU 通常是 74 字节 CCID 消息。ZLP 是零长度数据包，不是补一个 `0x00`；规范还要求总长为最大包长整数倍的 CCID Bulk IN 消息后发送 ZLP。参考 [CCID 规范 §3.1.3 与第 6 章](https://www.usb.org/sites/default/files/DWG_Smart-Card_CCID_Rev110.pdf)。
+
+<a id="usb-enumeration"></a>
+
+### 6.2 USB 设备枚举：电脑如何认出读卡器？
+
+**枚举就是电脑发现设备、询问它是谁、了解通信能力，再建立可用配置的过程。** 可以把描述符理解为设备交给电脑的一组“身份与接口说明”。USB 设备不是接上线后就可以随意发送业务数据。
+
+在本项目中，电脑是 Host，H563 读卡器是 Device。典型过程可简化为：
+
+```text
+插入 USB
+ → 主机发现连接、进行总线复位
+ → 通过默认控制端点 EP0 读取基本信息
+ → 给设备分配 USB 地址
+ → 读取完整描述符，了解接口和端点
+ → 匹配驱动、选择并激活配置
+ → 应用通过相应驱动使用读卡器
+```
+
+这是理解主线，具体描述符请求次数、复位和驱动加载顺序可能随主机实现变化，不要背成唯一的抓包时序。这里的 USB 总线复位也不等于 MCU 整片重新上电。
+
+- **设备描述符：** 包含 VID、PID 等整机身份信息，以及默认控制端点能力。VID／PID 是身份匹配信息，不是操作系统给设备分配的 USB 地址。
+- **配置描述符：** 描述某套配置的接口数量、供电特性等。
+- **接口与类描述符：** 说明功能和设备类能力，例如读卡器的 CCID 接口；复合设备还可以同时包含其他接口。
+- **端点描述符：** 告诉主机数据通道的地址、方向、传输类型、最大包长等。EP0 是默认控制通道，枚举主要通过它完成，不靠读卡 Bulk 端点。
+
+固件提供的身份、接口、类描述符及类行为决定它如何被系统使用，不是只把设备名称改成“Reader”就完成 CCID 迁移。Windows 识别到设备或成功加载驱动，也不等于 APDU 和卡片交互已经正常。
+
+Type-C／PD 管理与 USB 枚举是不同层次：前者涉及连接、电源角色及供电协商等，后者是 USB 数据链路上的设备识别与配置；能够供电不代表 USB 已枚举成功。
+
+依据：[微软 USB 描述符说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-descriptors)、[配置、接口与端点的关系](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-configuration-descriptors)、[Windows CCID 类驱动](https://learn.microsoft.com/en-us/previous-versions/windows/hardware/design/dn653571%28v%3Dvs.85%29)。
+
+<a id="usb-reader-usage"></a>
+
+### 6.3 USB 总线在读卡器中具体怎样使用？
+
+可以把端点理解为设备内不同用途的收发窗口。**IN／OUT 从主机视角命名：OUT 是电脑发给读卡器，IN 是读卡器发给电脑。** 它们通常共用 USB 数据线，通过协议区分，不是每个端点各接一组物理引脚。
+
+| USB 传输类型 | 通俗用途 | 与本项目的关系 |
+| --- | --- | --- |
+| Control 控制传输 | 识别和配置设备。 | EP0 上读取描述符、设置地址和配置，也可承载类请求。 |
+| Bulk 批量传输 | 可靠传输一段数据，吞吐取决于总线调度。 | Bulk OUT 承载 CCID 命令，Bulk IN 承载响应。 |
+| Interrupt 中断传输 | 主机按安排查询小量、及时性较强的事件。 | CCID 可用 Interrupt IN 报告卡片插拔等；不是设备直接触发电脑 CPU 的硬件中断。 |
+| Isochronous 等时传输 | 重视持续传输时机，如音视频流。 | 用于理解 USB 分类，不是本项目 APDU 通信的常规通道。 |
+
+**USB 2.0 的正常数据传输由主机发起和调度。** 设备准备好响应数据后，由主机安排读取；不能照搬 UART“双方各自往线上发字节”的理解。参考 [Microchip USB 通信说明](https://developerhelp.microchip.com/xwiki/bin/view/applications/usb/how-it-works/)。
+
+在 MCU 端，应用通常不手工控制 D+／D− 波形，而是配置 USB 外设和时钟，初始化 USBX，提供描述符、注册 CCID 类和业务处理回调。枚举及传输细节由硬件和协议栈处理，业务代码重点完成请求检查、卡片访问、应答及错误处理。
+
+```text
+Windows 应用发送 APDU
+ → 智能卡服务／驱动封装 CCID 请求
+ → USB Bulk OUT
+ → H563 USB 外设与 USBX
+ → XfrBlock 等业务处理路径
+ → 访问卡片并取得结果
+ → CCID 响应经 Bulk IN 返回
+ → Windows 应用取得应答
+```
+
+电脑侧的典型 PC/SC 使用顺序是：建立上下文 → 枚举读卡器 → 连接卡片 → 传输 APDU → 断开并释放资源，对应 `SCardEstablishContext()`、`SCardListReaders()`、`SCardConnect()`、`SCardTransmit()` 等接口。这是标准应用方式示意，不表示已核实 TpShell 最终版本正好采用这些接口；厂商扩展的 Escape 调用还需检查驱动支持和权限。
+
+与原 CDC 方案相比，应用层由“打开虚拟串口、收发自定义帧”转向“通过智能卡接口访问读卡器”，USB 物理连接可以保持不变。最大包长 64 字节只限制单个 USB 数据包，不代表 APDU 最大只能有 64 字节；长消息由协议栈和对应业务层按规则处理。
+
+参考：[微软智能卡访问函数](https://learn.microsoft.com/en-us/windows/win32/secauthn/smart-card-and-reader-access-functions)、[SCardListReaders](https://learn.microsoft.com/en-us/windows/win32/api/winscard/nf-winscard-scardlistreadersw)、[CCID 规范](https://www.usb.org/sites/default/files/DWG_Smart-Card_CCID_Rev110.pdf)。
 
 <a id="modular-design"></a>
 
@@ -617,6 +690,8 @@ ST 的 [EEPROM 仿真方案 AN4894／X-CUBE-EEPROM](https://www.st.com/resource/
 2026-10-29，在 §3.2 补充 I2C／Flash 互斥、USB 完整收包事件通知、PD 到 USB 管理线程启停队列的具体场景、文档依据与源码核对项。
 
 2026-10-29，在 §5.4–5.8 补充双 Bank／EDATA、EEPROM 对比、QuadWord 配置差异、耐久度及寿命预算，以及参数更新与掉电恢复设计；新增对应目录入口。
+
+2026-10-29，精简 §6.1 的 64 字节阻塞复盘，补充 CDC／CCID 迁移背景、USB 枚举、端点与传输类型、读卡器实际通信流程及目录入口；未将推测定位过程记为已确认经历。
 
 <a id="interview-question-collection"></a>
 
