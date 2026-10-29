@@ -43,7 +43,7 @@
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
-  - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
+  - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
 - [自旋锁、互斥锁与多核临界区](#spinlocks)
   - [区别与应用场景](#spinlock-usage) · [单核为什么不能随意忙等](#spinlock-single-core) · [Zephyr 使用例子](#spinlock-zephyr)
 - [抢占、时间片与协作式调度：四套系统对照](#scheduling-comparison)
@@ -1633,6 +1633,8 @@ void DisplayTask(void *arg) {
 ```
 
 **使用边界：** 拿到锁的任务应尽快释放它，避免持锁做漫长等待；同一任务负责拿锁和还锁。若使用异步 I2C/DMA，不能在传输尚未结束时释放总线锁。普通二值信号量没有 Mutex 的优先级继承机制。中断处理函数不能使用 Mutex；中断通知任务应使用合适的 `...FromISR` API。优先级继承只能减轻部分反转延迟，不能让 H 跳过等锁，也不能替代对最坏等待时间的分析。[FreeRTOS Mutex 与优先级继承说明](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
+
+**与死锁区分：** 优先级继承可以帮助持锁任务获得 CPU，但不能消除资源之间的循环等待；详见[死锁及其避免方法](#freertos-deadlock)。
 <!-- TOPIC:freertos-priority-inversion:END -->
 
 <a id="freertos-realtime"></a>
@@ -1670,6 +1672,8 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 
 **互斥量就是互斥锁（Mutex）。** 它有“持有者”：拿到锁的任务使用完资源后，应由同一个任务释放。FreeRTOS Mutex 带有基础的优先级继承；普通二值信号量没有。比如显示任务要往 OLED 写画面，传感器任务也要通过同一条 I2C 总线读数据：两个任务每次操作总线前都拿同一把 Mutex，操作完再释放，避免一次总线事务被另一个任务插入。优先级继承如何减轻等待，见 [优先级反转](#freertos-priority-inversion) 中的代码例子。中断不能拿或还 Mutex。[FreeRTOS Mutex 说明](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)
 
+需要同时获取多把锁时，还要防止[死锁](#freertos-deadlock)：规定一致的获取顺序，并为失败路径设计释放和退出处理。
+
 <a id="freertos-binary-semaphore"></a>
 #### 二值信号量：通知一件事发生了
 
@@ -1686,6 +1690,99 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 
 **一眼区分：** 保护共用 I2C 总线用 Mutex；中断说“DMA 完成了”用二值信号量或任务通知；传递每条具体数据用队列。中断操作队列或信号量要使用对应的 `...FromISR` API，不能在中断中阻塞等待。
 <!-- TOPIC:freertos-communication:END -->
+
+<a id="freertos-deadlock"></a>
+### 死锁：成因、避免与恢复
+<!-- TOPIC:freertos-deadlock:START -->
+
+**面试问题：什么是死锁？什么会造成死锁？如何避免或解决？** 死锁是相关任务互相等待，谁都无法继续推进，也就不能释放别人需要的资源。不一定整个 RTOS 都停止：死锁任务可能都处于 `Blocked`，其他无关任务仍正常运行；自旋形式的死锁也可能表现为 CPU 持续忙等。一次正常的短暂等锁或一次超时，不足以证明已经死锁。
+
+#### 例子：A、B 以相反顺序获取两把锁
+
+假设一项业务确实需要同时保护 I2C、SPI 两个资源。A 先拿 I2C 锁，B 却先拿 SPI 锁，并且双方无限等待第二把锁：
+
+| 顺序 | 任务 A | 任务 B |
+| --- | --- | --- |
+| 1 | 成功取得 I2C 锁。 | |
+| 2 | 被 B 抢占。 | 成功取得 SPI 锁。 |
+| 3 | | 申请 I2C 锁，因 A 持有而阻塞。 |
+| 4 | 恢复运行，申请 SPI 锁，因 B 持有而阻塞。 | |
+
+```text
+A 持有 I2C 锁 → 等待 B 释放 SPI 锁
+B 持有 SPI 锁 → 等待 A 释放 I2C 锁
+```
+
+此时即使 CPU 空闲，二者也不能前进；提高其中一个任务的优先级仍不能使它拿到锁。
+
+#### 四个必要条件和常见诱因
+
+对于经典互斥资源死锁，可用四个必要条件理解：
+
+| 条件 | 例子中的含义 |
+| --- | --- |
+| 互斥 | 一把 Mutex 同时只由一个任务持有。 |
+| 持有并等待 | 已经拿着一把锁，还等待另一把。 |
+| 不可强行剥夺 | 不能随意抢走持锁者的资源；通常由持锁任务完成操作后释放。 |
+| 循环等待 | A 等 B，B 又等 A；也可能涉及更多任务形成等待环。 |
+
+“不可剥夺”说的是资源，不是 CPU：调度器可以抢占 A 的执行，但不会因此自动把 A 持有的 Mutex 交给 B。设计中打破其中一个必要条件，可以避免对应的经典资源死锁；不能仅凭系统存在这些机制就断定当前已经发生死锁。
+
+常见诱因包括：多把锁的获取顺序不一致；任务持锁等待另一个任务的完成通知，而对方必须先获得同一把锁才能完成；外层函数持有普通非递归 Mutex，内部调用又申请同一把锁，造成自己等自己。FreeRTOS 的递归 Mutex 可用于确有递归持锁需求的场景，但每次获取都要对应释放，且它不能解除 A、B 的循环等待。单核上不当自旋导致持锁者无法运行的情况，见[自旋锁死锁例子](#spinlock-single-core)。
+
+漏释放锁也会导致永久等锁，诊断时同样要检查，但不应把所有长时间等待都一概称作两任务循环死锁。
+
+#### 如何避免：统一顺序，减少嵌套，失败时清理
+
+1. **统一获取顺序。** 所有代码都先拿 I2C 锁、再拿 SPI 锁，通常按相反顺序释放；包括内部函数、错误处理和回调路径，也应遵循同一规则。
+2. **减少同时持有的资源。** 可以分开完成的操作尽量分开；也可由专门任务管理外设，其他任务通过队列请求。采用消息传递后仍要检查同步回复是否引入新的循环等待。
+3. **为获取锁设置合理期限并检查结果。** 获取失败就走明确的退出／回滚路径，释放本次操作已经持有的锁；不要拿着第一把锁无限重试第二把。
+4. **缩短持锁时间。** 避免持锁等待一个依赖该资源才能产生的事件，所有退出路径都要正确释放资源。使用自旋锁时还必须遵守不能阻塞／睡眠等限制。
+
+下面是 **FreeRTOS 任务上下文中的加锁与退出路径示意**。两把 Mutex 必须已成功创建，且不同；所有调用方都采用相同顺序，每次调用开始时不持有它们。每次等待 100 ms 仅为例子，应按实时预算调整：
+
+```c
+#include "FreeRTOS.h"
+#include "semphr.h"
+
+BaseType_t UseBothResources(SemaphoreHandle_t i2cMutex,
+                           SemaphoreHandle_t spiMutex) {
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return pdFAIL;           // 第一把锁未取得，不访问资源
+    }
+
+    if (xSemaphoreTake(spiMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        xSemaphoreGive(i2cMutex); // 第二把失败，归还自己已持有的第一把
+        return pdFAIL;
+    }
+
+    // 两把锁都取得后，执行需要同时保护的操作。
+    // 若业务失败，也应先恢复一致状态并走相同的释放路径。
+
+    xSemaphoreGive(spiMutex);
+    xSemaphoreGive(i2cMutex);
+    return pdPASS;
+}
+```
+
+此函数只演示锁协议，未实现硬件操作。不要在中间新增一个跳过释放的 `return`。两次等待各有期限，不等于整个操作共用一个 100 ms 截止时间。**超时不是自动解除死锁的机制**：超时后仍占有资源或无休止重试，问题可能继续；超时应触发清理、限次重试或上报，而不是把失败当作成功。
+
+#### 已经疑似死锁时怎样定位和恢复？
+
+先保存任务状态、调用栈、锁持有者和等待对象，再沿着“这个任务等谁 → 对方又等谁”追踪，确认是否存在等待环；调试记录可包含每次获取／释放的锁、任务及时间。随后使用预先设计的超时退出、回滚和模块恢复流程。
+
+不能随便强制释放别人持有的 Mutex，也不能假设删除任务就能安全解锁：共享数据或外设事务可能只完成了一半。若无法安全恢复，可按系统要求使用模块重启或看门狗复位兜底，并保留诊断信息、修复根因；不是每种死锁都能在运行中无损解除。
+
+| 概念 | 主要问题 | 提高持锁任务优先级是否能解决？ |
+| --- | --- | --- |
+| 死锁 | 相关任务互相等资源，无法继续推进。 | 不能消除循环等待。 |
+| 优先级反转 | 高优先级任务等低优先级持锁者，后者又可能被中优先级任务拖延。 | 优先级继承可以减轻相应延迟，但不保证所有实时期限。 |
+| 饥饿 | 一个任务长期得不到 CPU 或所需资源，不要求存在等待环。 | 需要分析调度、公平性和负载，不能只套用继承。 |
+
+参考：[FreeRTOS 官方教程第 8.3.2～8.3.5 节：优先级反转、继承、死锁及递归 Mutex](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch08.md)；[Zephyr 自旋锁的递归、锁顺序与持锁限制](https://docs.zephyrproject.org/latest/kernel/services/synchronization/spinlocks.html)。
+
+**面试回答：** “死锁是任务之间形成相互等待，谁都无法继续释放资源，例如 A 持有 X 等 Y，B 持有 Y 等 X。我会通过统一拿锁顺序、减少嵌套、合理超时以及失败后的释放与回滚来预防。定位时查看任务栈、锁持有者和等待关系；已经发生时按设计恢复，无法安全恢复再考虑复位。优先级继承缓解反转，不能解除资源循环等待。”
+<!-- TOPIC:freertos-deadlock:END -->
 
 <a id="freertos-task-creation"></a>
 ### 创建任务
