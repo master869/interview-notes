@@ -57,6 +57,11 @@
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
   - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
+- [实习与项目独立笔记](experiences/README.md)
+  - [无锡融卡：STM32H563 智能卡读卡器](experiences/internship-smartcard-reader/README.md)
+  - [FreeRTOS 语音交互桌面机器狗](experiences/project-voice-robot-dog/README.md)
+  - [ATmega328PB 室内空气质量监测系统](experiences/project-air-quality-monitor/README.md)
+  - [STM32 电磁循迹智能小车](experiences/project-electromagnetic-car/README.md)
 
 <a id="memory-layout"></a>
 ## 六大内存分区
