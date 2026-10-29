@@ -44,6 +44,8 @@
 - [FreeRTOS](#freertos)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue)
+- [自旋锁、互斥锁与多核临界区](#spinlocks)
+  - [区别与应用场景](#spinlock-usage) · [单核为什么不能随意忙等](#spinlock-single-core) · [Zephyr 使用例子](#spinlock-zephyr)
 - [抢占、时间片与协作式调度：四套系统对照](#scheduling-comparison)
 - [CPU 调度算法：FCFS、SJF、SRTF、优先级、RR、MLFQ](#cpu-scheduling-algorithms)
   - [指标与解题约定](#scheduling-metrics) · [FCFS](#scheduling-fcfs) · [SJF](#scheduling-sjf) · [SRTF](#scheduling-srtf) · [优先级调度](#scheduling-priority) · [RR](#scheduling-rr) · [MLFQ](#scheduling-mlfq)
@@ -334,38 +336,79 @@ void RxTask(void *arg) {
 
 **临界区**是访问共享数据或设备时，必须作为一个整体完成、不能让其他执行者在中间插入的代码段。它只是需要保护的范围；**屏蔽中断是保护临界区的一种手段**，还可根据访问者选择原子操作、互斥量或消息传递。先弄清“谁会同时访问”，再选保护方式。
 
-**例子：** 脉冲中断每来一次将 `pulse_count` 加一；任务定期读出计数并清零。如果任务读到 5 后，中断把它加到 6，任务才清零，则第 6 次脉冲丢失。即使一次 32 位读写在当前 CPU 上是原子的，**读取和清零这两步合起来也不是原子的**；`volatile` 不能解决这个竞态。
+**本例范围：单核 Cortex-M4，使用常见的 FreeRTOS GCC ARM_CM4F 移植。** 任务 A、B 都给 `sharedCount` 加一。`sharedCount++` 虽然只有一句 C 代码，却可能分解为读取、加一、写回；即使单次读写是原子的，整个更新也未必原子。假设初始值为 10：
 
 ```text
-任务：读到 5 ───────────────→ 清零       结果：报告 5，漏掉新的一次
-                 中断：5 → 6
+A 读到 10 → 被抢占 → B 读到 10，加一，写回 11
+                  → A 恢复，把之前读到的 10 加一，写回 11
+预期两次加一得到 12，实际却只有 11。
 ```
 
-在单核 Cortex-M 裸机程序中，若只有可屏蔽的中断会修改该变量，可以把两步放在极短的临界区。以下是示意代码，`ClearPulseIrqFlag()` 需换成具体外设的清标志操作：
+让 A、B 都调用同一个受保护的更新函数，把整个“读取 → 加一 → 写回”放入临界区。下面是放进已有 FreeRTOS 工程的任务代码片段；在初始化时通过 `xTaskCreate()` 创建 `TaskA`、`TaskB`，具体创建方法见[创建任务](#freertos-task-creation)。
 
 ```c
+#include "FreeRTOS.h"
+#include "task.h"
 #include <stdint.h>
 
-static volatile uint32_t pulse_count;
+static uint32_t sharedCount = 0;
 
-void Pulse_IRQHandler(void) {
-    ClearPulseIrqFlag();
-    ++pulse_count;
+void IncrementSharedCount(void) {
+    taskENTER_CRITICAL();       // 由 RTOS 设置中断屏蔽
+
+    uint32_t temp = sharedCount;
+    temp++;
+    sharedCount = temp;          // 整个更新过程都在保护范围内
+
+    taskEXIT_CRITICAL();        // 配对退出，处理临界区嵌套
 }
 
-uint32_t take_pulse_count(void) {
-    uint32_t saved_primask = __get_PRIMASK();
-    __disable_irq();                 /* 进入临界区 */
-    uint32_t count = pulse_count;
-    pulse_count = 0;
-    __set_PRIMASK(saved_primask);    /* 恢复进入前的屏蔽状态 */
+uint32_t ReadSharedCount(void) {
+    taskENTER_CRITICAL();
+    uint32_t count = sharedCount;
+    taskEXIT_CRITICAL();
     return count;
+}
+
+void TaskA(void *arg) {
+    (void)arg;
+    for (;;) {
+        IncrementSharedCount();
+        vTaskDelay(pdMS_TO_TICKS(10)); // 等待必须在临界区外
+    }
+}
+
+void TaskB(void *arg) {
+    (void)arg;
+    for (;;) {
+        IncrementSharedCount();
+        uint32_t snapshot = ReadSharedCount();
+        (void)snapshot;          // 可在此处显示或处理快照，临界区已退出
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 ```
 
-`PRIMASK` 屏蔽的是 Cortex-M 可配置优先级异常的响应，不能屏蔽 NMI、HardFault，也不会停止 DMA。要恢复**进入前**的屏蔽状态，不能不加判断地打开所有中断；若只需防某一路中断，按平台能力缩小屏蔽范围。临界区应尽量短：里面不要等待、打印或做整笔 I2C 传输，长时间屏蔽会增加中断延迟，某些外设还可能因来不及处理连续事件而丢数据。
+执行时，A 进入临界区后完成整个更新，再退出；B 不能通过正常任务调度在这段更新中途运行。所有修改都采用同样的保护方式；`volatile` 不能替代这套同步，也不能让 `++` 自动变成原子操作。
 
-在 FreeRTOS 任务中应使用所用移植提供的 `taskENTER_CRITICAL()`／`taskEXIT_CRITICAL()` 等接口，并确认访问该数据的 ISR 确实处于会被这段临界区屏蔽的优先级范围；一些 Cortex-M 移植用 `BASEPRI` 保留更高优先级中断的响应。任务之间长期共用 I2C 总线，通常用[互斥量](#freertos-mutex)保护资源；中断与任务只需传递事件时，也可以用[任务通知](#interrupt-task-communication)。仅屏蔽当前 CPU 的中断不能保护另一个 CPU 核心的访问。
+**具体屏蔽什么？** 本例移植使用 `BASEPRI` 设置门槛，配置来自 `configMAX_SYSCALL_INTERRUPT_PRIORITY`，不是逐个手工关闭外设中断。假设 NVIC 实现 4 位优先级，并按 FreeRTOS 要求全部用于抢占优先级，可用编号 0～15，门槛对应编号 5：
+
+| 中断／异常 | 本例的优先级编号 | 进入临界区后 |
+| --- | --- | --- |
+| PendSV，执行任务上下文切换 | 15，最低优先级 | 暂缓执行，不能在临界区内切换到 B。 |
+| SysTick，推进系统节拍并可能触发调度 | 15，最低优先级 | 暂缓响应。 |
+| UART 中断，假设配置为 6 | 6 | 在屏蔽范围内，暂缓响应。 |
+| 紧急外设中断，假设配置为 2 | 2 | 不在屏蔽范围内，仍能响应。 |
+
+**编号 0～4 的中断紧急程度更高，保留响应；编号 5～15 暂时被屏蔽。** NVIC 编号越小越紧急，与 FreeRTOS 常见的“任务优先级数值越大越高”方向不同。若工程使用 `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` 表示未移位编号，这里为 5；按 4 位实现编码到 8 位寄存器后，`configMAX_SYSCALL_INTERRUPT_PRIORITY` 为 `5 << (8 - 4)`，即 `0x50`。这是假设配置，不能不核对芯片与优先级分组就照抄。
+
+**为什么屏蔽中断能防任务切换？** 本例中切换由 PendSV 完成；它与 SysTick 都位于被屏蔽范围。仅关 SysTick 不足以概括这套保护：其他 ISR 也可能唤醒任务并请求 PendSV，关键是切换处理程序在临界区内不能执行。
+
+**如果中断也访问 `sharedCount`：** 必须确认所有访问者都被正确保护。编号 6 的 ISR 不会在任务临界区中途插入，但 ISR 自己仍要按需要使用相应的 ISR 同步接口；若编号 2 的 ISR 也直接修改变量，上面的任务临界区就不够，应调整访问设计，或采用平台支持且可在该 ISR 上下文使用的原子机制。未被门槛屏蔽的高紧急程度 ISR 不能调用 FreeRTOS 内核 API，包括 `...FromISR` API；任务版 `taskENTER_CRITICAL()` 也不能直接搬进 ISR。
+
+参考：[FreeRTOS ARM_CM4F：临界区、PendSV 和 SysTick 优先级实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/port.c)；[BASEPRI 操作与屏蔽门槛](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/portmacro.h)。
+
+临界区应尽量短：里面不要等待、打印、主动让出 CPU 或做整笔 I2C 传输，长时间屏蔽会增加中断延迟，某些外设还可能因来不及处理连续事件而丢数据。屏蔽中断不停止 DMA，也不自动阻止另一 CPU 核心访问；其他处理器和 FreeRTOS 移植的实现应单独核对。任务之间共用完整 I2C 事务通常用[互斥量](#freertos-mutex)，多核短临界区可对照[自旋锁](#spinlocks)。
 
 <a id="interrupt-questions"></a>
 ### 常见面试追问
@@ -1721,6 +1764,74 @@ void DisplayTask(void *arg) {
 
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)、[FreeRTOS MPU 支持](https://www.freertos.org/Security/04-FreeRTOS-MPU-memory-protection-unit)、[Linux pthreads 手册](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
 <!-- TOPIC:freertos-linux-stack:END -->
+
+<a id="spinlocks"></a>
+## 自旋锁、互斥锁与多核临界区
+<!-- TOPIC:spinlocks:START -->
+
+**面试问题：互斥锁和自旋锁有什么区别？RTOS 中什么时候使用自旋锁？** 临界区是需要保护的代码范围；互斥锁、自旋锁和中断屏蔽是保护它的不同手段。选择取决于执行上下文、持锁时间、是否允许阻塞以及是否多核。
+
+<a id="spinlock-usage"></a>
+### 区别与应用场景
+
+| 对比项 | 互斥锁 Mutex | 自旋锁 Spinlock |
+| --- | --- | --- |
+| 获取不到时 | 若允许等待，任务阻塞，让出 CPU；非阻塞尝试也可以立即失败。 | 常规加锁操作会在当前 CPU 反复尝试，忙等到锁可用。 |
+| 适合保护 | 任务之间共享的资源或数据；应控制持锁时间。 | 极短、执行时间有界的共享数据操作。 |
+| 中断上下文 | FreeRTOS、Zephyr 的 Mutex 不用于 ISR。 | 仅按具体 RTOS 的接口和中断限制使用。 |
+| 优先级继承 | 可支持，例如 FreeRTOS Mutex 的基础继承机制。 | 通常没有，不能靠它自动解决优先级反转。 |
+| 持锁期间睡眠／阻塞 | 机制上可能允许，但长时间占锁会拖延其他任务。 | 不允许；会阻碍等锁者推进，并可能造成死锁。 |
+
+**典型场景是多核 RTOS：** CPU 0 拿锁修改共享链表的几个指针，CPU 1 短暂自旋；CPU 0 仍能并行执行并很快释放锁。临界区足够短时，这可能比阻塞、切换任务再唤醒更合适，但等待时间还取决于竞争，不能保证自旋一定更快。
+
+可考虑自旋锁的操作包括：跨核更新就绪队列／共享链表、缓冲区管理信息，以及任务与允许使用该接口的 ISR 共同更新极短的共享状态。若只是一个支持原子更新的字段，可先考虑合适的原子操作。不能在自旋锁内延时、等待 DMA 完成、调用可能阻塞的队列接收或进行耗时打印；等待完整 I2C 事务通常优先用 Mutex。
+
+多核只关闭本核中断，不能阻止另一个核心访问，因此还需要跨核同步。自旋锁实现通常同时处理原子竞争、内存顺序和本核执行约束；不能用 `volatile` 标志加普通 `while` 循环自行代替。
+
+<a id="spinlock-single-core"></a>
+### 单核为什么不能随意忙等？
+
+假设自行实现的锁只忙等，未防止持锁任务被抢占：
+
+```text
+低优先级 A 拿到锁 → 高优先级 B 抢占 A → B 一直等 A 释放锁
+                                          ↓
+                        B 持续运行，A 没机会运行并解锁，可能死锁
+```
+
+因此“真正自旋等待”的典型场景是多核，但不能断言自旋锁接口只存在于多核。RTOS 的正规接口会按其规则处理本核中断／抢占等问题。以 Zephyr 为例，`k_spin_lock()` 屏蔽本核普通中断；多核下还通过共享锁排斥其他核心。**单核、未启用 SMP 时，它退化为本核中断保护，不会真的空转等另一个任务。** 特殊中断上下文的使用限制仍以平台文档为准。
+
+<a id="spinlock-zephyr"></a>
+### Zephyr 接口例子：一起更新两个共享字段
+
+下面是 **Zephyr** 代码片段，不是 FreeRTOS API。假设两个字段必须一致地更新，所有并发读写者都要遵循同一套锁协议：
+
+```c
+#include <zephyr/kernel.h>
+#include <stdint.h>
+
+static struct k_spinlock stateLock;
+static struct {
+    uint32_t status;
+    uint32_t sequence;
+} sharedState;
+
+void UpdateSharedState(uint32_t status) {
+    k_spinlock_key_t key = k_spin_lock(&stateLock);
+
+    sharedState.status = status;
+    sharedState.sequence++;
+
+    k_spin_unlock(&stateLock, key); // 用对应 key 恢复本核中断状态
+}
+```
+
+锁内只有短小的内存更新；外设通信和日志应放在锁外。Zephyr 自旋锁不可递归获取同一把锁；多把锁嵌套要保持一致顺序。应用层通常优先采用合适的高层同步机制，自旋锁更多用于内核／驱动和跨核短临界区，不能把这种使用规则直接套到所有 RTOS 的同名接口。
+
+参考：[Zephyr 自旋锁规则、单核优化与场景](https://docs.zephyrproject.org/latest/kernel/services/synchronization/spinlocks.html)；[Zephyr Spinlock API 与 key](https://docs.zephyrproject.org/latest/doxygen/html/group__spinlock__apis.html)；[Zephyr SMP 同步](https://docs.zephyrproject.org/latest/kernel/services/smp/smp.html)；[FreeRTOS Mutex](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)。
+
+**面试回答：** “Mutex 在竞争时可以阻塞任务，让出 CPU；自旋锁在当前 CPU 上忙等，适合多核系统中的极短临界区或不能睡眠的内核路径。自旋锁要遵守本核中断、抢占及持锁限制，不能把外设等待放在锁内。单核 RTOS 也可能保留自旋锁接口，但实现可能退化为中断保护。共享 I2C 事务我优先用 Mutex，跨核更新少量共享数据才考虑平台的自旋锁。”
+<!-- TOPIC:spinlocks:END -->
 
 <a id="scheduling-comparison"></a>
 ## 抢占、时间片与协作式调度：FreeRTOS、ThreadX、Zephyr、Linux 对照
