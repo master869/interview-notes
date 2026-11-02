@@ -42,6 +42,7 @@
   - [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
+  - [FreeRTOS 与 CMSIS-RTOS2 的关系](#freertos-cmsis-rtos2)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
 - [自旋锁、互斥锁与多核临界区](#spinlocks)
@@ -1484,6 +1485,57 @@ void matrix_example(void) {
 <a id="freertos"></a>
 ## FreeRTOS
 
+<a id="freertos-cmsis-rtos2"></a>
+### FreeRTOS 与 CMSIS-RTOS2 的关系
+<!-- TOPIC:freertos-cmsis-rtos2:START -->
+
+**FreeRTOS 是 RTOS 内核，CMSIS-RTOS2 是 Arm 定义的统一 RTOS 接口规范。** FreeRTOS 实际负责任务调度、上下文切换、阻塞唤醒以及队列、互斥量等内核对象的管理。CMSIS-RTOS2 规定应用怎样调用这些服务，本身不是另一个操作系统；FreeRTOS 可以直接通过原生接口使用，也可以通过 CMSIS-RTOS2 的适配实现使用。[Arm CMSIS-RTOS2 概述](https://arm-software.github.io/CMSIS_6/main/RTOS2/index.html)
+
+```text
+使用 FreeRTOS 原生接口：
+业务代码 → xTaskCreate() 等接口 → FreeRTOS 内核
+
+使用 CMSIS-RTOS2 接口（本次核对的 FreeRTOS 工程）：
+业务代码 → osThreadNew() 等统一接口
+         → CMSIS-RTOS2 的 FreeRTOS 适配代码
+         → xTaskCreate() 等接口 → FreeRTOS 内核
+```
+
+调用方向是应用通过适配层使用 FreeRTOS。`cmsis_os2.h` 提供统一接口的声明和类型，具体实现负责把调用交给所选内核；只加入头文件不能替代内核及适配实现。看到 `osThreadNew()` 也不能单凭函数名认定底层就是 FreeRTOS，需继续查看其实现或工程构建配置。[Arm 接口使用说明](https://arm-software.github.io/CMSIS_6/main/RTOS2/usingOS2.html)
+
+| 操作 | FreeRTOS 原生接口 | CMSIS-RTOS2 接口 |
+| --- | --- | --- |
+| 创建任务／线程 | `xTaskCreate()`、`xTaskCreateStatic()` | `osThreadNew()`，通过属性指定相关资源 |
+| 当前任务延时 | `vTaskDelay()` | `osDelay()` |
+| 向队列发送消息 | `xQueueSend()` | `osMessageQueuePut()` |
+| 获取互斥量 | `xSemaphoreTake()`，对象是互斥量 | `osMutexAcquire()` |
+| 启动调度器 | `vTaskStartScheduler()` | `osKernelStart()` |
+
+表中接口用途相近，参数、返回值和调用限制要分别核对，不能仅替换函数名。`osDelay()` 的参数按内核 tick 计，不能直接当作毫秒；在 ISR 中也只能使用该实现允许的接口和参数，不能阻塞等待。[Arm CMSIS-RTOS2 功能与调用规则](https://arm-software.github.io/CMSIS_6/main/RTOS2/usingOS2.html)
+
+**为什么使用这一层接口？**
+
+1. **减少业务对某个内核的依赖。** 线程创建、队列收发等采用统一接口，换到有兼容实现的 RTOS 时，这部分业务代码更容易复用。
+2. **方便团队和中间件集成。** 不同模块可以遵循同一套线程、同步和通信接口，减少各自适配多种内核的工作。
+3. **集中处理参数差异。** 比如线程优先级和栈大小，由适配代码按目标内核的要求转换，业务代码保持统一的表达方式。
+
+这些好处不代表更换内核后可以直接运行：仍需核对适配层支持范围、调度与超时行为、栈及控制块要求、硬件配置。它也不会自动让程序更快或保证实时期限；专有内核功能可能需要直接调用原生接口。RTX5 将 CMSIS-RTOS2 作为原生接口；FreeRTOS、Zephyr 等可提供适配实现，具体支持范围以所用版本为准。[Arm 支持的内核列表](https://arm-software.github.io/CMSIS_6/main/RTOS2/index.html)
+
+**项目例子：优先级名称到底等于几？** 本次核对的 `wifi_http_otaf_soc_4_28` 工程使用 Simplicity SDK 2025.6.3。其 `cmsis_os2.h` 定义枚举数值，`cmsis_os2.c` 中的 `osThreadNew()` 把优先级按 `prio - 1U` 传给 FreeRTOS：
+
+| 线程 | CMSIS-RTOS2 配置 | CMSIS 数值 | 此适配层传给 FreeRTOS 的数值 |
+| --- | --- | --- | --- |
+| `app` | `osPriorityLow` | 8 | 7 |
+| `mqtt` | `osPriorityBelowNormal` | 16 | 15 |
+| `i2s_capture` | `osPriorityAboveNormal` | 32 | 31 |
+
+这三者的优先级顺序是 `i2s_capture > mqtt > app`；只有处于就绪状态的线程才参与调度。排查时先在优先级名称上“转到定义”，再跟进 `osThreadNew()` 的实现，看最终传给内核的参数。表中的减一是已核对工程的实现，不能推广到所有 CMSIS-RTOS2 适配层。枚举定义可对照 [Arm 官方头文件](https://github.com/ARM-software/CMSIS_6/blob/main/CMSIS/RTOS2/Include/cmsis_os2.h)。
+
+同一工程的适配层还把 `.stack_size` 的字节数除以 `sizeof(StackType_t)`，再交给 FreeRTOS。例如 `.stack_size = 3072` 表示 **3072 字节**；在 4 字节栈元素的平台上，传给标准 `xTaskCreate()` 的栈深度为 768。不能因为底层是 FreeRTOS，就把 CMSIS 属性里的 3072 解释为 3072 个字。[CMSIS 线程属性定义](https://arm-software.github.io/CMSIS_6/main/RTOS2/group__CMSIS__RTOS__ThreadMgmt.html)
+
+**结合个人经历回答：**“我展示的 FreeRTOS 工程通过 CMSIS-RTOS2 接口创建线程，适配层再调用 FreeRTOS，实际调度由 FreeRTOS 完成。实习读卡器使用的是 ThreadX 原生 `tx_thread_create()`、`tx_mutex_get()` 等接口，这一点已由本人确认。统一接口可以降低对内核 API 的依赖，但两个项目的内核及具体配置仍需分别理解。”
+<!-- TOPIC:freertos-cmsis-rtos2:END -->
+
 <a id="freertos-scheduling"></a>
 ### 任务调度
 <!-- TOPIC:freertos-scheduling:START -->
@@ -1800,6 +1852,8 @@ BaseType_t UseBothResources(SemaphoreHandle_t i2cMutex,
 3. 创建好需要的任务和通信对象后，调用 `vTaskStartScheduler()` 启动调度器。
 
 `xTaskCreate()` 为任务控制块和栈动态分配内存；`xTaskCreateStatic()` 则由调用者提供这两块内存。**标准 FreeRTOS 的栈深度按 `StackType_t` 元素数计，通常称为“字”，不是字节数**；使用厂商改造版时应核对该平台的 API 文档。
+
+若项目使用 `osThreadNew()`，需按 [CMSIS-RTOS2 接口与适配层](#freertos-cmsis-rtos2)理解创建参数；其中 `.stack_size` 按字节指定，与上述 FreeRTOS 原生栈深度参数不同。
 
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)。
 <!-- TOPIC:freertos-task-creation:END -->
