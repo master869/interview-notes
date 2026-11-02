@@ -94,28 +94,30 @@ Flash 主要保存固件和其他非易失内容；SRAM 是任务运行时的工
 
 依据 `app.c` 的 `osThreadAttr_t` 和 `osThreadNew()`。创建接口属于 CMSIS-RTOS2，底层为 FreeRTOS；表中栈大小单位为字节，是配置容量，不是实测用量。这里不把 Idle、可选定时器服务和 SDK 内部任务计入 9 个应用任务。
 
-| 实际任务名 | 优先级 | 配置栈／B | 该版职责与主要等待方式 |
-| --- | --- | --- | --- |
-| `app` | Low | 3072 | Wi-Fi 初始化及 OTA 状态机；联网后创建 `mqtt`；正常联网状态循环末尾 `osDelay(10)`，其他状态可能存在更长等待。 |
-| `mqtt` | BelowNormal | 4096 | 初始化客户端、连接、订阅、首次发布；完成后循环 `osDelay(1000)`。消息通过 SDK 回调处理，不是集中接收其他任务待发消息的队列消费者。 |
-| `i2s_capture` | AboveNormal | 3072 | 初始化采集、检查接收完成标志并处理音频块；每轮处理后 `osDelay(2)`。 |
-| `speaker_playback` | AboveNormal | 3072 | 检查播放请求、准备播放块、处理发送完成标志；每轮末尾 `osDelay(2)`。 |
-| `pwm_ctrl` | Normal | 3072 | 入口函数为 `pwm_control_thread()`；检查动作请求、执行动作及发布姿态；每轮末尾 `osDelay(50)`，动作内部还可能延时。 |
-| `i2c_leader` | BelowNormal | 3072 | 根据共享场景状态分步刷新 OLED；每轮处理后 `osDelay(10)`。 |
-| `button0` | BelowNormal | 2048 | 检查按键状态变化；识别按下再释放后延时 300 tick 发起录音；循环末尾 `osDelay(20)`。 |
-| `led_blink` | BelowNormal | 1024 | 根据共享开关闪灯；开启时按 `LED_BLINK_INTERVAL_MS = 500` 延时，关闭分支 `osDelay(50)`。 |
-| `audio_uploader` | Low | 2048 | 等完整录音后直接分块发布 MQTT；无请求时 `osDelay(20)`，等待 MQTT 任务创建时延时 100，上传失败时延时 300。 |
+| 实际任务名 | CMSIS 优先级名称 | CMSIS 数值 | 底层 FreeRTOS 数值 | 配置栈／B | 该版职责与主要等待方式 |
+| --- | --- | --- | --- | --- | --- |
+| `app` | Low | 8 | **7** | 3072 | Wi-Fi 初始化及 OTA 状态机；联网后创建 `mqtt`；正常联网状态循环末尾 `osDelay(10)`，其他状态可能存在更长等待。 |
+| `mqtt` | BelowNormal | 16 | **15** | 4096 | 初始化客户端、连接、订阅、首次发布；完成后循环 `osDelay(1000)`。消息通过 SDK 回调处理，不是集中接收其他任务待发消息的队列消费者。 |
+| `i2s_capture` | AboveNormal | 32 | **31** | 3072 | 初始化采集、检查接收完成标志并处理音频块；每轮处理后 `osDelay(2)`。 |
+| `speaker_playback` | AboveNormal | 32 | **31** | 3072 | 检查播放请求、准备本地扬声器播放块、处理 I2S 发送完成标志；每轮末尾 `osDelay(2)`。不是向云端发送录音的任务。 |
+| `pwm_ctrl` | Normal | 24 | **23** | 3072 | 入口函数为 `pwm_control_thread()`；检查动作请求、执行动作及发布姿态；每轮末尾 `osDelay(50)`，动作内部还可能延时。 |
+| `i2c_leader` | BelowNormal | 16 | **15** | 3072 | 根据共享场景状态分步刷新 OLED；每轮处理后 `osDelay(10)`。 |
+| `button0` | BelowNormal | 16 | **15** | 2048 | 检查按键状态变化；识别按下再释放后延时 300 tick 发起录音；循环末尾 `osDelay(20)`。 |
+| `led_blink` | BelowNormal | 16 | **15** | 1024 | 根据共享开关闪灯；开启时按 `LED_BLINK_INTERVAL_MS = 500` 延时，关闭分支 `osDelay(50)`。 |
+| `audio_uploader` | Low | 8 | **7** | 2048 | 等完整录音后直接分块发布 MQTT；无请求时 `osDelay(20)`，等待 MQTT 任务创建时延时 100，上传失败时延时 300。 |
+
+数值依据：已核对工程内 `simplicity_sdk_2025.6.3/platform/CMSIS/RTOS2/Include/cmsis_os2.h` 的枚举，以及 `simplicity_sdk_2025.6.3/util/third_party/freertos/cmsis/Source/cmsis_os2.c` 的 `osThreadNew()`；该适配实现向 `xTaskCreate()`／`xTaskCreateStatic()` 传入 `prio - 1U`。两层数值在这里都是越大优先级越高；表中是创建时的基础配置，不是内核运行时可能变化的有效优先级。减一是这份适配实现的行为，不能直接套到其他 SDK。原理见 [FreeRTOS 与 CMSIS-RTOS2 的关系](../../README.md#freertos-cmsis-rtos2)。
 
 相对等级从高到低为：
 
 ```text
-AboveNormal：i2s_capture、speaker_playback
+AboveNormal（CMSIS 32 → FreeRTOS 31）：i2s_capture、speaker_playback
       ↓
-Normal：pwm_ctrl
+Normal（CMSIS 24 → FreeRTOS 23）：pwm_ctrl
       ↓
-BelowNormal：mqtt、i2c_leader、button0、led_blink
+BelowNormal（CMSIS 16 → FreeRTOS 15）：mqtt、i2c_leader、button0、led_blink
       ↓
-Low：app、audio_uploader
+Low（CMSIS 8 → FreeRTOS 7）：app、audio_uploader
 ```
 
 `config/FreeRTOSConfig.h` 中 `configUSE_PREEMPTION = 1`、`configUSE_TIME_SLICING = 1`、`configTICK_RATE_HZ = 1000`。因此该版启用抢占和同优先级时间片轮转；`osDelay()` 参数单位是 tick，本配置下 1 tick 对应 1 ms。表中延时不是任务的精确执行周期：还要加上处理时间、其他阻塞与调度等待。
