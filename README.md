@@ -17,7 +17,7 @@
 - [HardFault 定位](#hardfault)
   - [Keil 排查步骤](#hardfault-steps) · [寄存器现场例子](#hardfault-example) · [容易误判的情况](#hardfault-pitfalls)
 - [Cache 与 DMA](#cache-dma)
-  - [Cache 基础](#cache-basics) · [DMA 与缓存一致性](#dma-coherency)
+  - [Cache 基础](#cache-basics) · [四个项目的芯片与 Cache](#project-chip-cache) · [DMA 与缓存一致性](#dma-coherency)
 - [ADC 模数转换与采样](#adc)
   - [ADC 怎样工作](#adc-basics) · [分辨率与采样率](#adc-resolution-rate) · [典型应用](#adc-applications) · [采样注意点](#adc-practical)
 - [I2C 总线与显示屏通信](#i2c)
@@ -536,6 +536,26 @@ RAM：程序运行时存放的大量数据
 ```
 
 **Cache 按“缓存行”管理数据，而非只处理一个字节。** 例如某平台一行是 32 字节，读取一个字节时可能把它所在的整行取进 Cache；32 字节只是示例，实际大小看芯片手册。后续对 DMA 缓冲区执行缓存维护时，要考虑行对齐，以及缓冲区是否与其他变量共享同一行，否则可能影响邻近数据。[Linux DMA 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
+
+<a id="project-chip-cache"></a>
+### 四个项目的芯片与 Cache
+
+**个人实践范围：这四个项目中，我没有主动围绕 Cache 做配置、性能优化或 DMA 缓存维护。** 下面记录的是芯片具备的硬件能力，不能据此说自己做过 Cache 一致性问题的定位。反过来，没有在业务代码中操作 Cache，也不能证明运行时所有 Cache 都被关闭；启动代码、Bootloader 或 SDK 可能已经启用并管理了部分缓存功能。
+
+| 项目 | 芯片及内核 | 是否带 Cache、主要作用 | 与本项目经历的关系 |
+| --- | --- | --- | --- |
+| [语音识别机器狗](experiences/project-voice-robot-dog/README.md) | SiWG917Y121MGABA，应用侧 Cortex-M4 | 应用侧有 **16 KB I-Cache、16 KB D-Cache**；I-Cache 用于 Flash／PSRAM 取指，D-Cache 用于 PSRAM 数据访问。 | 芯片带 Cache，但没有主动开发缓存管理逻辑；当前工程的普通音频数组按链接配置放在片内 SRAM，不能直接套用 PSRAM 的 D-Cache 维护流程。 |
+| [实习读卡器](experiences/internship-smartcard-reader/README.md) | STM32H563ZI，Cortex-M33 | 有 **8 KB I-Cache、4 KB D-Cache**；I-Cache 加速 Flash 等取指，D-Cache 面向外部存储器。 | 没有主动围绕 Cache 开发；缺少完整公司工程的启用状态证据，不能写成已经确认全部关闭，也不能把其外部存储 D-Cache 当作覆盖全部片内 SRAM。 |
+| [电磁循迹小车](experiences/project-electromagnetic-car/README.md) | STM32F103，Cortex-M3；完整型号后缀待确认 | 没有这里讨论的 I-Cache／D-Cache；有 **Flash 预取缓冲**。 | 没有上述 D-Cache 与 DMA 缓冲区一致性的维护需求；Flash 预取缓冲不等于缓存普通 SRAM 数据的 D-Cache。 |
+| [空气质量监测](experiences/project-air-quality-monitor/README.md) | ATmega328PB，8 位 AVR；ESP32 负责联网 | ATmega328PB 没有上述 I-Cache／D-Cache；ESP32 具备用于 Flash 等外部存储访问的 Cache，具体配置取决于子型号。 | AVR 主控没有 Cache 管理需求；没有主动管理联网端 ESP32 的 Cache，且其具体子型号、PSRAM 使用及运行配置尚未核验。 |
+
+硬件依据：[SiWG917 数据手册](https://www.silabs.com/documents/public/data-sheets/siwg917y-datasheet.pdf)、[SiWG917 PSRAM 与缓存路径](https://docs.silabs.com/wiseconnect/4.0.0/wifi-siwx917-soc-memory-map/pseudo-static-random-access-memory-psram)、[STM32H563 数据手册](https://www.st.com/resource/en/datasheet/stm32h563ag.pdf)、[STM32F1 参考手册](https://www.st.com/resource/en/reference_manual/cd00171190-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-stm32f107xx-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf)、[ATmega328PB 数据手册](https://www.microchip.com/content/dam/mchp/documents/MCU08/ProductDocuments/DataSheets/40001906C.pdf)、[ESP32 存储与 Flash Cache 说明](https://docs.espressif.com/projects/esp-idf/en/v5.0.8/esp32/api-guides/memory-types.html)。
+
+**结合机器狗工程理解：** `audio_buffer`、`pp_buf_a`、`pp_buf_b` 是没有指定特殊存储段的全局／静态数组；当前 `autogen/linkerfile_SoC.ld` 把 `.bss` 放在片内 SRAM，未配置 PSRAM 存储区。因此，按当前源码和链接配置，这些数组并不位于 PSRAM 数据 Cache 的访问路径。最终地址可通过编译生成的 map 文件或调试器进一步核实。
+
+**判断方法：** “芯片带 Cache”不代表“所有内存都被缓存”，也不代表“使用 DMA 就必须手工刷 Cache”。先确认 **缓存是否开启 → 缓冲区实际地址及缓存属性 → CPU／DMA 的访问路径 → 是否由硬件或驱动保证一致性**。另外，Cortex-M4 内核本身没有 Cortex-M7 那套标准 Cache，并不妨碍芯片厂商在 SoC 中额外加入缓存，SiWG917 就是这样的例子。
+
+**面试简答：** “我用过的 SiWG917、STM32H563 和联网端 ESP32 具备 Cache，但我在这些项目中没有主动做 Cache 优化或缓存一致性维护。芯片能力和我的实际开发经历需要分开；如果后续遇到 DMA 旧数据问题，我会先检查缓冲区是否经过已启用的数据 Cache，再按平台要求处理。”
 
 <a id="dma-coherency"></a>
 ### DMA 与缓存一致性
