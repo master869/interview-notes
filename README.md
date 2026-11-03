@@ -577,7 +577,7 @@ DMA 让外设与内存交换数据时无需 CPU 逐字节搬运；CPU 通常负�
 
 **不是所有项目都要手工清理 Cache。** 有的 MCU 没有启用 D-Cache；有的平台由硬件保证 CPU 与 DMA 一致；若 [I2C 显示屏](#i2c)由 CPU 直接写外设寄存器、没有使用 DMA 缓冲区，也不会按上述方式出现“DMA 读到旧缓冲区”的问题。在 Linux 驱动中应使用 DMA 映射与同步 API，让平台实现处理缓存一致性；裸机或 RTOS 下则遵循芯片手册和驱动要求。[Arm Cortex-M7 缓存维护操作](https://documentation-service.arm.com/static/61efd6602dd99944d051417b?token=)；[Linux DMA API 指南](https://docs.kernel.org/core-api/dma-api-howto.html)
 
-**与 [`volatile`](#volatile) 区分：** `volatile` 约束编译器对对象访问的优化，不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
+**与 [`volatile`](#volatile-cache) 区分：** `volatile` 约束编译器对对象访问的优化，重新读取变量仍可能命中 Cache；它不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
 <!-- TOPIC:cache-dma:END -->
 
 <a id="adc"></a>
@@ -1216,7 +1216,7 @@ USBX 是嵌入式 USB 协议栈，CCID 是智能卡读卡器使用的 USB 设备
 
 **面试问题：`volatile` 有什么作用？什么时候用？**
 
-`volatile` 告诉编译器：这个对象的值可能在当前代码看不到的地方发生变化，因此对它的访问不能像普通对象那样被省略或长期保存在寄存器中。典型场景是内存映射的硬件寄存器，以及在满足平台约束时由中断例程和主程序共同访问的标志。
+`volatile` 告诉编译器：这个对象的值可能在当前代码看不到的地方发生变化，因此对它的访问不能像普通对象那样被省略，也不能一直复用寄存器中的旧值来代替后续应有的读取。它约束的是对对象的读写访问，并不禁止 CPU 把读到的值放入寄存器计算。典型场景是内存映射的硬件寄存器，以及在满足平台约束时由中断例程和主程序共同访问的标志。
 
 ```c
 volatile int event_ready = 0;
@@ -1232,6 +1232,25 @@ int main(void) {
     return 0;
 }
 ```
+
+<a id="volatile-cache"></a>
+#### `volatile` 操作的是内存还是 Cache？
+
+**不能简单回答“直接读 RAM”。** `volatile` 是编译器层面的限定符，约束编译器对访问的优化；实际读取由 Cache 还是 RAM 等后级存储提供数据，取决于硬件、Cache 是否启用以及该地址的缓存属性。上例的循环需要重新读取 `event_ready`，但重新访问其地址不等于绕过 Cache。
+
+```text
+编译器保留对 volatile 对象的读取访问
+                  ↓
+CPU 执行读取指令，访问对象地址
+                  ↓
+       根据地址属性和缓存状态处理
+         ├─ 可缓存且 Cache 命中 → 从 Cache 取得数据
+         └─ 不可缓存或未命中 → 访问后级存储（可能是 RAM）
+```
+
+对于 `#define REG (*(volatile uint32_t *)0x40000000UL)` 这样的 [MMIO 寄存器访问表达式](#register-access-c)，**地址**决定访问哪个硬件寄存器，**`volatile`** 约束编译器对访问的优化，**内存属性**决定是否经过 Cache。外设寄存器区域通常配置为不可缓存；这是平台地址属性的作用，不是 `volatile` 的作用。
+
+**面试简答：** “`volatile` 约束编译器对对象读写的优化，但不决定硬件缓存路径。它不负责绕过 Cache、clean 或 invalidate，也不能代替内存屏障、原子操作或锁；DMA 一致性问题需要按平台要求单独处理。”具体维护规则见 [Cache 与 DMA](#dma-coherency)。[GCC 对 volatile 访问及内存屏障边界的说明](https://gcc.gnu.org/onlinedocs/gcc/Volatiles.html)
 
 **追问：不加 `volatile` 会怎样？加锁后变量为什么仍可能在寄存器里？** 对硬件寄存器轮询而言，不加 `volatile` 可能使编译器省略重复读取，看不到硬件更新。锁并非“禁止使用寄存器”：CPU 仍会把值读入寄存器运算；互斥锁负责控制并发访问和建立线程间的内存同步。所有线程都正确使用同一把锁保护普通共享变量时，通常无须再加 `volatile`。
 
