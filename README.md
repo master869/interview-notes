@@ -39,7 +39,7 @@
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
 - [指针](#pointers)
-  - [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
+  - [不同类型的指针](#pointer-types) · [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [内核本质与 TCB](#freertos-kernel-tcb) · [状态与链表的关系](#freertos-state-lists) · [PendSV 切换源码解读](#freertos-pendsv)
@@ -1740,6 +1740,62 @@ void array_example(void) {
 ## 指针
 <!-- TOPIC:pointers:START -->
 
+<a id="pointer-types"></a>
+### 不同类型的指针：`char *` 与 `int *` 有什么区别？
+
+**指针变量保存地址；所指类型决定如何访问对象，以及指针加一跨过多大空间。** `char *pc` 表示 `pc` 是指向 `char` 的指针，`int *pi` 表示 `pi` 是指向 `int` 的指针。`pc`／`pi` 表示指针值，`*pc`／`*pi` 表示通过指针访问对应对象；星号在声明中和表达式中的作用要分开理解。
+
+| 指针类型 | 解引用时按什么类型访问 | 加一的步长 |
+| --- | --- | --- |
+| `char *` | 一个 `char`，大小为 1 个 C 字节 | `sizeof(char)`，即 1 字节；常见平台每字节 8 位。 |
+| `int *` | 一个 `int` | `sizeof(int)`；在 `int` 为 4 字节的平台前进 4 字节。 |
+| `double *` | 一个 `double` | `sizeof(double)`；在 `double` 为 8 字节的平台前进 8 字节。 |
+| `void *` | 不指定所指对象类型，不能直接解引用取得对象值 | 标准 C 不支持 `void *` 加一；需先转换为合适的对象指针。 |
+
+```c
+#include <stdio.h>
+
+void pointer_types_example(void)
+{
+    char chars[2] = {'A', 'B'};
+    int ints[2] = {100, 200};
+    char *pc = chars;
+    int *pi = ints;
+
+    printf("*pc=%c, *pi=%d\n", *pc, *pi);       // A、100
+    printf("next=%c, %d\n", *(pc + 1), *(pi + 1)); // B、200
+    printf("object sizes: %zu, %zu\n", sizeof *pc, sizeof *pi);
+    printf("pointer sizes: %zu, %zu\n", sizeof pc, sizeof pi);
+}
+```
+
+**所指对象大小不等于指针本身的大小。** `sizeof *pc` 是 `char` 大小，`sizeof *pi` 是 `int` 大小；`sizeof pc`、`sizeof pi` 才是两个指针变量的大小。常见 32 位 MCU 上二者通常都占 4 字节，常见 64 位平台上通常都占 8 字节，但 C 不保证所有指针类型在所有平台上大小相同。指针加一用于访问下一个数组元素，须遵守数组边界；允许形成末尾后一位置的指针，但不能解引用它。
+
+#### 结合大小端例子：同一个起始地址，不同访问方式
+
+```c
+int i = 1;
+int *pi = &i;
+unsigned char *pc = (unsigned char *)&i;
+
+// *pi：按 int 类型读取完整整数，普通大端／小端机器上都得到 1。
+// *pc：读取 i 的第一个字节，可以据此观察字节排列。
+```
+
+假设 `int` 占 4 字节、每字节 8 位：
+
+```text
+                    从低地址到高地址
+小端：i 的内存       [01] [00] [00] [00]   → *pi 为 1，*pc 为 1
+大端：i 的内存       [00] [00] [00] [01]   → *pi 为 1，*pc 为 0
+                     ↑
+              两个指针对应同一起始位置
+```
+
+`(unsigned char *)&i` 只改变访问视角，不会移动地址或改变 `i` 的内容。这里使用字符类型，是因为 C 允许通过字符类型访问对象的字节表示，观察原始字节通常选 `unsigned char`；不能据此推断任意对象指针之间强转后都能安全解引用，还要满足对齐和类型访问规则。
+
+**不要混淆数值转换和字节观察：** `(char)i` 把数值 1 转为 `char`，仍得到 1，无法区分大小端；`*((unsigned char *)&i)` 才是在读取对象的第一个字节。完整可调用函数见[判断大小端](#endianness-code)。上述规则可对照 [C11 草案 N1570：6.3.2.3、6.5 第 7 段、6.5.6 与 6.5.3.4](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+
 <a id="pointer-vs-array"></a>
 ### 指针与数组名有什么区别？
 
@@ -3077,6 +3133,43 @@ void reverseString(char *s, int sSize) {
 **结合 I2C 项目：** OLED 的 `0x00` 控制字节和 `0xAF` 命令都只有一个字节，本身不受大小端影响。如果某个外设协议规定先发 16 位数的高字节，就要明确拆成 `value >> 8`、`value & 0xFF` 依次发送，而不能假设把整数的内存地址直接交给发送函数就一定符合协议。CPU 的内存字节序与设备协议要求的传输顺序是两件事；参见 [I2C 总线与显示屏通信](#i2c)。
 
 **题目：** 写程序判断当前机器存放多字节整数时采用小端还是大端。
+
+#### 用整数 `1` 判断并打印：`judge_bigend_littleend2()`
+
+下面对应截图中的自定义小函数，将原图的 `char` 改成更适合观察原始字节的 `unsigned char`，并用 `(void)` 明确声明无参数。**按常见的 `int` 为 4 字节、每字节 8 位，且只考虑普通纯大端／纯小端的条件说明。**
+
+```c
+#include <stdio.h>
+
+void judge_bigend_littleend2(void)
+{
+    int i = 1;
+    unsigned char c = *((unsigned char *)&i);
+
+    if (c)
+        printf("小端\n");
+    else
+        printf("大端\n");
+}
+```
+
+| 表达式 | 作用 |
+| --- | --- |
+| `&i` | 取得整数对象的起始地址，原类型为 `int *`。 |
+| `(unsigned char *)&i` | 转为字符指针，从同一起始位置按字节观察。 |
+| `*((unsigned char *)&i)` | 读取最低内存地址处的一个字节，赋给 `c`。 |
+| `if (c)` | 判断是否非零，等价于 `if (c != 0)`。 |
+
+```text
+整数值：0x00000001
+                 低地址 → 高地址
+小端存储：       01 00 00 00  → 第一个字节为 1 → 打印“小端”
+大端存储：       00 00 00 01  → 第一个字节为 0 → 打印“大端”
+```
+
+**关键区别：** 直接通过 `int *` 读取 `i`，无论普通大端还是小端都得到数值 1；转换为字符指针后才只观察第一个字节。转换的是访问用的指针类型，并没有把整数转换成字符数值，也没有改变整数在内存中的排列。更多指针类型与步长解释见[不同类型的指针](#pointer-types)。
+
+#### 返回判断结果的版本：`is_little_endian()`
 
 **思路：** 一个整数 `0x0102` 有高位字节 `0x01`、低位字节 `0x02`。从它的**最低内存地址** 读一个字节：读到 `0x02` 是小端，读到 `0x01` 是大端。C 允许通过 `unsigned char *` 观察对象的字节表示。
 
