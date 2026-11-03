@@ -42,6 +42,7 @@
   - [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
+  - [内核本质与 TCB](#freertos-kernel-tcb) · [状态与链表的关系](#freertos-state-lists) · [PendSV 切换源码解读](#freertos-pendsv)
   - [FreeRTOS 与 CMSIS-RTOS2 的关系](#freertos-cmsis-rtos2)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
@@ -1615,6 +1616,85 @@ void matrix_example(void) {
 <a id="freertos"></a>
 ## FreeRTOS
 
+<a id="freertos-kernel-tcb"></a>
+### FreeRTOS 的本质与 TCB 任务控制块
+<!-- TOPIC:freertos-kernel-tcb:START -->
+
+**FreeRTOS 是编译进固件的一套内核软件，不是硬件。** 它用数据结构管理任务和等待条件，用调度规则选择运行任务，再由处理器移植代码配合 CPU 异常机制保存、恢复执行现场。下面以本项目的单核 Cortex-M4F 移植为例；其他处理器和多核版本的实现细节不同。
+
+“底层是一对链表不断调用”只涉及其中一部分。链表用于组织哪些任务可运行、哪些任务在等待；TCB 保存管理信息，任务栈保留执行现场，调度器选择任务，移植层真正切换 CPU 现场。它不是一个在后台反复调用所有任务函数的大循环：平时 CPU 执行某个任务，调用内核 API 或发生 tick、事件等情况时，内核处理状态并按需请求切换。[FreeRTOS 内核源码](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/tasks.c)
+
+| 一个任务的组成 | 存放什么 | 本项目中的位置与用途 |
+| --- | --- | --- |
+| 任务入口函数 | `i2s_capture_thread()` 等编译后的指令 | 通常随程序映像保存，提供要执行的代码；不是每次调度都从入口重来。 |
+| 任务栈 | 调用链、通常的局部变量，以及暂停时保存的寄存器现场 | RAM；任务再次运行时使用原来的栈和现场继续执行。 |
+| **TCB（Task Control Block，任务控制块）** | 优先级、栈地址、链表节点、任务名等管理信息 | RAM 中的 C 结构体；每个任务有自己的控制块，不是硬件寄存器。 |
+
+即使两个任务使用同一个入口函数，它们仍可有不同的 TCB、栈和参数，分别保持执行进度。`xTaskCreate()` 动态取得任务控制块及栈内存；`xTaskCreateStatic()` 使用调用者提供的内存，参见 [创建任务](#freertos-task-creation)。
+
+#### TCB 的关键字段分别干什么？
+
+下列内容从所读工程的 `tasks.c` 摘出关键字段，省略了配置相关成员，不是完整定义：
+
+```c
+typedef struct tskTaskControlBlock {
+    volatile StackType_t *pxTopOfStack;
+    ListItem_t xStateListItem;
+    ListItem_t xEventListItem;
+    UBaseType_t uxPriority;
+    StackType_t *pxStack;
+    char pcTaskName[configMAX_TASK_NAME_LEN];
+    /* 省略其他字段 */
+} TCB_t;
+```
+
+| 字段 | 作用 |
+| --- | --- |
+| `pxTopOfStack` | 保存任务切出后的现场栈顶位置。该移植要求它是 TCB 的第一个成员，汇编才能从 TCB 偏移 0 处直接读写。任务运行时实际栈位置会变化，不能把这个保存值当成一直实时更新的 CPU SP。 |
+| `pxStack` | 记录任务栈内存的起始地址，与保存现场位置的 `pxTopOfStack` 作用不同。 |
+| `uxPriority` | 当前任务优先级；可能因 API 或优先级继承等机制改变。 |
+| `xStateListItem` | 将任务加入就绪、延时、挂起等状态管理链表的节点。 |
+| `xEventListItem` | 将任务加入队列、信号量等对象的事件等待链表的节点。 |
+| `pcTaskName` | 任务名称，方便识别和调试。 |
+
+**寄存器现场主要保存在任务栈里，TCB 用指针找到它们。** 不会把整段任务内存、所有局部变量或外设配置都复制进 TCB。单核版本的 `pxCurrentTCB` 是一个指向当前任务 TCB 的全局指针变量：
+
+```text
+pxCurrentTCB → TCB_A → pxTopOfStack → A 保存的执行现场
+其他任务     → TCB_B → pxTopOfStack → B 保存的执行现场
+```
+
+<a id="freertos-state-lists"></a>
+#### 四种任务状态是否各对应一条链表？
+
+**状态与链表不是一一对应关系。** 状态描述任务能否运行，链表是内核管理状态的一种实现方式。所读单核源码包含 `pxReadyTasksLists[configMAX_PRIORITIES]`、两条延时链表，以及按配置启用的挂起、待删除等链表；并不是只有两条链表。
+
+| 对外的任务状态 | 该单核实现中的管理方式 |
+| --- | --- |
+| `Ready` | 每个优先级各有一条就绪链表；任务按自己的当前优先级加入对应链表。 |
+| `Running` | 当前运行任务仍在对应的就绪链表中，用 `pxCurrentTCB` 标记正在执行的任务，没有单独的运行链表。 |
+| `Blocked` | 有限期等待通常进入按到期时间排序的延时链表；等待队列等对象时，还可通过另一个节点登记在对象的事件等待链表中。 |
+| `Suspended` | 显式调用 `vTaskSuspend()` 的任务进入挂起链表。某些 API 的无限期事件等待也会借用该链表管理，但语义仍是阻塞，不能只凭链表名称判断。 |
+
+例如 A、B 同优先级且都可运行，二者都在该优先级就绪链表中；`pxCurrentTCB` 指向 A 时 A 为 Running，B 为 Ready。轮到 B 后更换当前任务并恢复现场，不需要把 A 搬到一个所谓的“运行链表”。链表节点属于 TCB，链表并不复制或保存任务函数本身。
+
+若任务在队列上最多等待 100 tick，则“等哪个队列”和“最晚何时到期”需要分别记录，所以 TCB 有状态节点和事件节点。到期或事件满足时，内核解除相应等待，再把任务放回就绪链表。更完整的状态定义见 [任务的四种状态](#freertos-task-states)。
+
+**最高优先级任务调用 `vTaskDelay(10)` 为什么也会停下来？** 对 `n > 0`，内核计算 `到期 tick = 当前 tick + n`，从就绪链表移除当前任务，按到期时间放入延时链表，再请求切换。它的优先级没降低，但已经不具备就绪资格。tick 到期后，内核将它移回就绪链表；在本项目抢占配置下，若它比运行任务优先级高，就请求切换。`vTaskDelay(0)` 只请求重新调度，不进入延时链表，不能保证低优先级任务运行。
+
+```text
+A Running → vTaskDelay(n > 0) → 延时链表中的 A（Blocked）
+                                   │ CPU 可运行其他就绪任务
+                                tick 到期
+                                   ↓
+                         A 回就绪链表（Ready）
+                                   ↓ 被调度选中
+                         恢复现场，A 继续执行
+```
+
+延时以 tick 计数，实际阻塞时长受调用相位影响；到期恢复就绪也不保证立刻获得 CPU。源码入口是 `vTaskDelay()`、`prvAddCurrentTaskToDelayedList()`、`xTaskIncrementTick()`；修改链表时使用的 `vTaskSuspendAll()` 是暂缓任务调度，不是把每个任务都改为 Suspended，也不是关闭全部硬件中断。[FreeRTOS 任务与链表实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/tasks.c)
+<!-- TOPIC:freertos-kernel-tcb:END -->
+
 <a id="freertos-cmsis-rtos2"></a>
 ### FreeRTOS 与 CMSIS-RTOS2 的关系
 <!-- TOPIC:freertos-cmsis-rtos2:START -->
@@ -1721,6 +1801,8 @@ flowchart LR
 
 **注意调试工具里的 `S`：** FreeRTOS 内部也可能把无限期等待某事件的任务放在挂起列表中；`vTaskList()` 的 `S` 既可能表示显式挂起，也可能表示无超时阻塞。判断时要看任务调用了哪个 API，不要只凭一个字母断定它调用过 `vTaskSuspend()`。
 
+这四种状态与内核链表的对应方式见 [状态与链表的关系](#freertos-state-lists)：Running 没有独立链表，当前运行任务仍保留在对应优先级的就绪链表中。
+
 参考：[FreeRTOS 任务状态](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/02-Task-states)、[任务状态查询与 `vTaskList()`](https://www.freertos.org/Documentation/02-Kernel/04-API-references/03-Task-utilities/00-Task-utilities)。
 <!-- TOPIC:freertos-task-states:END -->
 
@@ -1734,7 +1816,7 @@ flowchart LR
 
 | 触发情况 | 例子 | 结果 |
 | --- | --- | --- |
-| 当前任务不能继续运行 | `vTaskDelay()`；在空队列上等待；挂起或删除自身 | 当前任务离开 `Running`，调度器选择其他 `Ready` 任务。 |
+| 当前任务不能继续运行 | `vTaskDelay(n > 0)`；在空队列上阻塞等待；挂起或删除自身 | 当前任务离开 `Running`，调度器选择其他 `Ready` 任务。 |
 | 更高优先级任务变为 `Ready` | 中断通知了等待中的任务；等待超时；其他任务恢复了它 | 在抢占式配置下，高优先级任务可抢占当前任务。 |
 | 同优先级任务轮流运行 | 系统节拍到来，且启用了时间片轮转 | 可能切换到另一个同优先级任务。 |
 | 主动请求调度或调整优先级 | `taskYIELD()`；`vTaskPrioritySet()` | 重新选择任务；`taskYIELD()` 不保证低优先级任务能运行。 |
@@ -1754,6 +1836,56 @@ flowchart LR
 | FreeRTOS 的任务控制块 | 指向该任务已保存现场的栈顶指针 | 切回任务时找到它自己的栈。 |
 
 **不会复制整个任务内存。** 局部变量和调用链原本就在各任务自己的栈中，保留栈与栈顶位置即可；全局变量和堆内存也不会在每次切换时整体复制。比如显示任务等待队列而切出，收到绘制请求后先进入 `Ready`，被选中时恢复自己的现场，继续执行等待调用后面的代码。
+
+<a id="freertos-pendsv"></a>
+#### PendSV 是什么？结合 Cortex-M4F 源码看任务切换
+
+**PendSV 是 CPU 硬件提供的可挂起系统异常，`PendSV_Handler` 是软件处理函数。** 不用 RTOS，Cortex-M 仍有这项异常机制；FreeRTOS 利用它执行任务切换。异常也不一定表示错误，外设 IRQ、SysTick、SVC 和故障异常分别处理不同事件。详细分类见 [中断与异常](#interrupts)。
+
+本项目请求 PendSV 时，向 `SCB->ICSR` 的第 28 位 `PENDSVSET` 写 1，等价于 `SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;`。写入只登记请求，不是普通函数调用；优先级和屏蔽条件允许时，CPU 通过向量表进入处理函数。移植层将 PendSV 设为最低异常优先级，使切换可延后到更紧急的 ISR 完成后。这里的异常优先级与任务优先级分开管理，寄存器写法见 [C 语言访问寄存器](#register-access-c)。
+
+**通常先请求重新调度，再在 PendSV 内选择下一任务。** 不是所有路径都先选出“新任务不等于当前任务”才触发 PendSV；请求后也可能选回同一任务。tick、主动阻塞和事件唤醒都可能请求切换，不必一律等下一个 tick。
+
+以 A 切到 B 为例，任务使用 PSP，Handler 模式使用 MSP。进入异常时，硬件已把基本现场 `R0～R3、R12、任务原 LR、PC、xPSR` 保存到任务栈；若经过 ISR 尾链进入 PendSV，现场可能已在前一异常入口保存。处理函数当前的 R14 则是 **EXC_RETURN**，不是任务原来的 LR。以下按已核对的 `portable/GCC/ARM_CM4F/port.c` 解读：
+
+| 指令片段 | 在切换中做什么 |
+| --- | --- |
+| `mrs r0, psp` | 用 R0 取得 A 的任务栈位置，后续按此地址保存现场。 |
+| `ldr r3, pxCurrentTCBConst`；`ldr r2, [r3]` | R3 得到全局指针变量 `pxCurrentTCB` 自身的地址；R2 再读出该变量的值，即 TCB_A 的地址。末尾 `.word pxCurrentTCB` 提供前一步加载的地址常量。 |
+| `tst r14, #0x10`；`it eq`；`vstmdbeq r0!, {s16-s31}` | 检查 A 的 EXC_RETURN 第 4 位；为 0 时按需要保存高浮点寄存器。`!` 表示更新 R0。 |
+| `stmdb r0!, {r4-r11, r14}`；`str r0, [r2]` | 向 A 的任务栈补存 R4～R11 和 EXC_RETURN，再将保存后的栈顶写到 TCB_A 偏移 0 的 `pxTopOfStack`。 |
+| `stmdb sp!, {r0, r3}` | 通过 MSP 暂存处理函数所需的信息，与通过 R0 访问的任务栈分开。 |
+| `mov r0, %0`；`msr basepri, r0`；`dsb`；`isb` | `%0` 由内联汇编输入操作数填成 `configMAX_SYSCALL_INTERRUPT_PRIORITY`；设置 BASEPRI 门槛并同步，保护内核数据。更紧急且未被屏蔽的中断仍可响应，但不能违规调用内核 API。 |
+| `bl vTaskSwitchContext` | 调度器选择最高就绪优先级中的任务；假设选中 B，将 `pxCurrentTCB` 更新为 TCB_B。 |
+| `mov r0, #0`；`msr basepri, r0`；`ldmia sp!, {r0, r3}` | 解除这段代码设置的 BASEPRI 门槛，恢复 MSP 上的临时信息。 |
+| `ldr r1, [r3]`；`ldr r0, [r1]` | 重新读同一个全局变量，得到新的 TCB_B，再从其第一个成员取出 B 保存的栈顶。 |
+| `ldmia r0!, {r4-r11, r14}`；随后按需 `vldmiaeq` | 恢复 B 的软件保存现场；恢复的是 B 的 EXC_RETURN，因此浮点恢复也按 B 的状态判断。 |
+| `msr psp, r0`；`isb`；`bx r14` | PSP 改为 B 的硬件栈帧位置；通过 EXC_RETURN 触发异常返回，硬件恢复 B 的 PC 等基本现场，CPU 从 B 暂停处继续。 |
+
+下面仅表示逻辑，不是可作为普通 C 函数编译的上下文切换实现：
+
+```text
+进入 PendSV 时，A 的硬件基本现场已在任务栈中
+
+sp_A = PSP
+sp_A = 按需保存 A 的高浮点寄存器(sp_A)
+sp_A = 保存 A 的 R4～R11、EXC_RETURN(sp_A)
+TCB_A.pxTopOfStack = sp_A
+
+设置内核中断屏蔽门槛
+vTaskSwitchContext()              // 假设选中 B，pxCurrentTCB 指向 TCB_B
+解除相应屏蔽
+
+sp_B = pxCurrentTCB->pxTopOfStack
+sp_B = 恢复 B 的 R4～R11、EXC_RETURN(sp_B)
+sp_B = 按需恢复 B 的高浮点寄存器(sp_B)
+PSP = sp_B
+执行异常返回                    // 硬件从 B 的栈恢复 PC 等现场
+```
+
+实际代码用 `__attribute__((naked))` 避免编译器生成普通函数的进出栈过程，因为栈与寄存器由移植汇编精确管理；`__asm volatile` 标记汇编块。`.align`、`.word` 是汇编对齐与数据定义；`WORKAROUND_PMU_CM001` 是特定 XMC4000 芯片修复的条件编译分支，不是通用调度步骤。
+
+理解这段代码时尤其区分：**TCB 保存栈位置，任务栈保存现场；选择 B 只是改变当前任务指针，恢复 B 的 PC 才让 CPU 真正继续执行 B。** 浮点现场还涉及硬件扩展栈帧和延迟压栈，不能把不带浮点的布局当成所有 Cortex-M 的固定布局。[Arm Cortex-M4F 浮点与切换说明](https://documentation-service.arm.com/static/5f0352c0cafe527e86f5bc66) · [FreeRTOS ARM_CM4F 实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/port.c)
 
 参考：[FreeRTOS 调度规则](https://www.freertos.org/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling)、[Arm Cortex-M 异常入口压栈](https://documentation-service.arm.com/static/6036810d5319e554d4ba108e)、[FreeRTOS Cortex-M4F 移植代码](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/port.c)。
 <!-- TOPIC:freertos-context-switch:END -->
