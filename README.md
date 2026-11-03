@@ -10,8 +10,8 @@
   - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
 - [Cortex-M MCU 上电启动流程](#mcu-boot)
   - [复位与启动地址](#mcu-boot-reset) · [向量表与第一条指令](#mcu-boot-vector) · [启动代码和变量初始化](#mcu-boot-runtime)
-- [Cortex-M CPU 寄存器](#cortex-m-registers)
-  - [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
+- [Cortex-M 核心与外设寄存器](#cortex-m-registers)
+  - [核心与外设寄存器的区别](#register-categories) · [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
 - [中断与中断嵌套](#interrupts)
   - [一次中断的流程](#interrupt-lifecycle) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [临界区与屏蔽中断](#interrupt-critical-section) · [面试追问](#interrupt-questions)
 - [HardFault 定位](#hardfault)
@@ -35,7 +35,7 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
+  - [`volatile`](#volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
 - [指针](#pointers)
@@ -201,10 +201,46 @@ int flag;        // 通常在 .bss：启动时对应的 RAM 区域被清零
 <!-- TOPIC:mcu-boot:END -->
 
 <a id="cortex-m-registers"></a>
-## Cortex-M CPU 寄存器
+## Cortex-M 核心与外设寄存器
 <!-- TOPIC:cortex-m-registers:START -->
 
-以下以常见的 **Cortex-M3/M4/M7** 为例。寄存器是 CPU 内部暂存数据与状态的地方；不同芯片内核的寄存器集合可能不同。`R0`～`R12` 本质上是通用寄存器，表中的“参数”“局部值”等是 **函数调用约定中的常见分工**，并非硬件规定每个寄存器只能做一件事。[Arm Cortex-M4 核心寄存器说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)；[Arm 32 位函数调用约定](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
+以下以常见的 **Cortex-M3/M4/M7** 为例。寄存器是硬件向软件提供的数据、控制或状态接口，不能把整颗 MCU 的寄存器都理解为 R0～R15。先区分下列类别，再看核心寄存器的逐项用途。
+
+<a id="register-categories"></a>
+### CPU 核心寄存器与外设寄存器有什么区别？
+
+| 类别 | 例子与用途 | 访问方式 |
+| --- | --- | --- |
+| **CPU 核心寄存器** | `R0`～`R12` 参与运算、暂存值；`SP` 管栈、`LR` 保存返回信息、`PC` 表示执行位置；另有 `xPSR`、`CONTROL` 等。 | 指令直接指定寄存器，如 `ADD R0, R1, R2`；特殊寄存器按架构要求使用相应指令或内建函数。不是给 R0 编造一个内存地址再用指针访问。 |
+| **芯片外设及系统模块的寄存器** | UART 的收发／波特率／状态、定时器的计数／比较、GPIO 的方向／输出、DMA 的地址／数量，以及芯片时钟、电源和复位控制。 | 通常映射到 CPU 地址空间，通过加载／存储指令访问；C 中可用指针或厂商定义的寄存器结构体访问。 |
+| **内核系统控制模块的内存映射寄存器** | SCB 的 `ICSR`、`CFSR` 等，以及 NVIC、SysTick 的相关寄存器。 | 同样通过指定地址访问；例如 `SCB->ICSR`。它们与内核有关，但不属于 R0～R15 那组指令直接使用的寄存器。 |
+
+寄存器通常呈现为若干有硬件含义的位：可以控制功能开关、显示状态或传递数据。某些写入会触发操作，某些读取会取走 FIFO 数据，不能把所有寄存器都当作普通 RAM 存储单元。外设有多个实例，每个实例又有多种功能，因此芯片中会有大量寄存器地址。[Arm 外设访问规范与寄存器布局](https://arm-software.github.io/CMSIS_6/v6.3.0/Core/group__peripheral__gr.html)
+
+```text
+MCU 芯片
+├─ CPU 内核：R0～R15、状态与控制寄存器
+├─ 内核系统控制模块：SCB、NVIC、SysTick 等
+├─ UART、GPIO、定时器、ADC、DMA：各自的寄存器组
+└─ 时钟、电源、复位模块：各自的控制与状态寄存器
+```
+
+**两类寄存器会配合使用。** 例如 CPU 可先用 R0 保存目标外设地址，用 R1 保存待写值，再执行 `STR R1, [R0]`，通过总线把值送到该硬件寄存器。R0、R1 是执行指令时的核心寄存器，R0 指向的目标则是另一个硬件模块的寄存器。C 写法见 [C 语言访问寄存器](#register-access-c)。
+
+**项目截图里的宏不全是寄存器。** 已核对 Si91x SDK 的 `system_si91x.h`，例如：
+
+| 定义 | 表示什么 |
+| --- | --- |
+| `PLL_REF_CLK_CONFIG_REG`，展开为 `*(volatile uint32_t *)(0x46180000UL + 0x8000 + 0x04)` | 访问地址 `0x46188004` 对应寄存器的表达式；具体位含义查对应芯片手册。 |
+| `M4SS_P2P_INT_BASE_ADDRESS 0x46008000` | 一组寄存器的基地址常量，不是一次读写操作。 |
+| `SELECT_RC_MHZ_CLOCK BIT(15)` | 位掩码；在该类定义中表示选中第 15 位的数值，不是寄存器地址。 |
+| `XTAL_CLK_FREQ 40000000UL` | 40 MHz 的频率数值常量，不是寄存器。 |
+
+芯片寄存器的地址、偏移和访问规则来自手册，宏只是方便代码使用的命名；不是写一个宏就创建了硬件。[SiWx917 参考手册](https://www.silabs.com/documents/public/reference-manuals/siw917x-family-rm.pdf)
+
+RTOS 切换任务时保存、恢复的是必要的 CPU 执行现场，不会每次把所有 UART、PLL、GPIO 配置都切换一遍。多个任务使用同一个外设时，仍需明确驱动访问和同步规则。
+
+`R0`～`R12` 本质上是通用寄存器，下表中的“参数”“局部值”等是 **函数调用约定中的常见分工**，并非硬件规定每个寄存器只能做一件事。[Arm Cortex-M4 核心寄存器说明](https://documentation-service.arm.com/static/5f2ac76d60a93e65927bbdc5)；[Arm 32 位函数调用约定](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)
 
 <a id="core-registers"></a>
 ### R0～R15：数据、栈、返回位置与执行位置
@@ -1140,6 +1176,100 @@ int main(void) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:volatile:END -->
+
+<a id="register-access-c"></a>
+### C 语言访问寄存器：指针、宏与位操作
+<!-- TOPIC:register-access-c:START -->
+
+**面试问题：怎样直接向某个寄存器地址写入一个值？** 对支持内存映射 I/O（MMIO）的目标平台，把手册规定的地址转换为正确类型的 `volatile` 指针，再解引用赋值。这里定义的是寄存器的访问表达式，不是创建硬件。先分清 [核心寄存器与外设寄存器](#register-categories)。
+
+#### 从普通指针赋值理解寄存器访问
+
+```c
+#include <stdint.h>
+
+void pointer_example(void)
+{
+    uint32_t number = 0;
+    uint32_t other = 0;
+    uint32_t *p = &number;
+
+    *p = 123;   // 修改 number 的值，p 保存的地址不变
+    p = &other; // 修改 p 的指向，不会因此把 other 赋值为 123
+    *p = 456;   // 此时修改 other；number 仍为 123
+}
+```
+
+`p` 保存地址，`*p` 表示通过该地址访问目标对象。`uint32_t *` 对应 32 位对象，因此 `*p = 123` 是对 4 字节对象赋值，不是只修改起始地址处的一个字节。寄存器指针与此语法相同，但目标地址映射到硬件，访问还要遵守硬件规则。
+
+#### 用 PendSV 请求寄存器逐层拆解
+
+下面是 Cortex-M4 上请求 PendSV 的示例；执行赋值会产生实际硬件效果：
+
+```c
+#include <stdint.h>
+
+#define portNVIC_INT_CTRL_REG (*(volatile uint32_t *)0xE000ED04UL)
+#define portNVIC_PENDSVSET_BIT (1UL << 28U)
+
+void request_pendsv(void)
+{
+    portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT;
+}
+```
+
+赋值语句展开后相当于：
+
+```c
+*(volatile uint32_t *)0xE000ED04UL = (1UL << 28U);
+```
+
+| 部分 | 具体含义 |
+| --- | --- |
+| `0xE000ED04UL` | 整数形式的目标地址；在这里对应 SCB 的 `ICSR`。 |
+| `(volatile uint32_t *)地址` | 将地址转换为指向 volatile 32 位无符号对象的指针。 |
+| `*(volatile uint32_t *)地址` | 解引用，通过该地址访问对象；放在赋值左侧表示写目标。 |
+| `1UL << 28U` | 将无符号长整型的 1 左移 28 位，得到 `0x10000000`，即仅第 28 位为 1。 |
+| `目标 = 值` | 在目标平台上执行相应写访问；这里向 `PENDSVSET` 写 1，请求挂起 PendSV。 |
+
+也可以先保存指针，再写入，含义相同：
+
+```c
+void request_pendsv_via_pointer(void)
+{
+    volatile uint32_t *reg = (volatile uint32_t *)0xE000ED04UL;
+    *reg = (1UL << 28U);
+}
+```
+
+工程有 CMSIS 头文件时，通常可直接用 `SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;` 表达同一操作。地址、布局和掩码由头文件封装，便于核对和维护。[Arm Cortex-M4 寄存器定义](https://github.com/ARM-software/CMSIS_6/blob/main/CMSIS/Core/Include/core_cm4.h)
+
+#### 宏定义为什么有反斜杠？
+
+单行宏可以直接写成：
+
+```c
+#define portNVIC_INT_CTRL_REG (*(volatile uint32_t *)0xE000ED04UL)
+```
+
+若拆成两行，使用反斜杠续行，效果相同，选择其中一种即可：
+
+```c
+#define portNVIC_INT_CTRL_REG \
+    (*(volatile uint32_t *)0xE000ED04UL)
+```
+
+反斜杠应紧挨换行，后面不要加空格或注释；不换行就不需要它。`#define` 只提供预处理时的文本替换，本身不执行寄存器写入，也不分配一个新的硬件寄存器。执行到 `portNVIC_INT_CTRL_REG = value;` 才产生写访问。[C11 公开草案 §5.1.1.2：续行处理](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+#### 直接写寄存器时要核对什么？
+
+- **地址、宽度、对齐及权限：** 根据目标手册选择 8／16／32 位访问，确认该地址当前可访问、寄存器允许写入；类型转换本身不会使非法地址变合法。
+- **`volatile`：** 用于约束编译器对硬件访问的优化，避免按普通变量处理必要的读写；它不提供互斥、原子复合操作、Cache 同步或通用内存屏障，详细区别见 [`volatile`](#volatile)。
+- **位的硬件语义：** 普通可读写位、只读位、写 1 清零位、写 1 触发操作位不同；还要遵守保留位和访问顺序要求。`REG |= mask` 是“读—修改—写”，不能当作所有寄存器的通用置位方法。上面的 PendSV 请求按手册直接写掩码。
+- **C 的可移植边界：** 语法使用 C 的强制转换、指针和赋值，但整数转指针的结果属于实现定义，具体 MMIO 映射来自芯片与工具链，不是 ISO C 保证该地址在所有机器上都有效。[C11 公开草案 §6.3.2.3](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
+
+面试可解释为：“先从手册确定寄存器地址和访问宽度，通过 volatile 指针解引用写入；如果有厂商头文件，优先用其寄存器结构体和位掩码。写入值及读改写是否允许，要以寄存器语义为准。”
+<!-- TOPIC:register-access-c:END -->
 
 <a id="static"></a>
 ### `static`
