@@ -13,11 +13,13 @@
 - [Cortex-M 核心与外设寄存器](#cortex-m-registers)
   - [核心与外设寄存器的区别](#register-categories) · [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
 - [中断与中断嵌套](#interrupts)
-  - [一次中断的流程](#interrupt-lifecycle) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [临界区与屏蔽中断](#interrupt-critical-section) · [面试追问](#interrupt-questions)
+  - [一次中断的流程](#interrupt-lifecycle) · [中断与异常、同步与异步](#interrupt-exception-types) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [临界区与屏蔽中断](#interrupt-critical-section) · [面试追问](#interrupt-questions)
 - [HardFault 定位](#hardfault)
   - [Keil 排查步骤](#hardfault-steps) · [寄存器现场例子](#hardfault-example) · [容易误判的情况](#hardfault-pitfalls)
 - [Cache 与 DMA](#cache-dma)
-  - [Cache 基础](#cache-basics) · [四个项目的芯片与 Cache](#project-chip-cache) · [DMA 与缓存一致性](#dma-coherency)
+  - [Cache 基础](#cache-basics) · [四个项目的芯片与 Cache](#project-chip-cache) · [DMA 搬运原理](#dma-transfer) · [双缓冲](#dma-double-buffer) · [DMA 与缓存一致性](#dma-coherency)
+- [GPIO：推挽与开漏](#gpio-output)
+- [MCU 选型与性能](#mcu-performance)
 - [ADC 模数转换与采样](#adc)
   - [ADC 怎样工作](#adc-basics) · [分辨率与采样率](#adc-resolution-rate) · [典型应用](#adc-applications) · [采样注意点](#adc-practical)
 - [I2C 总线与显示屏通信](#i2c)
@@ -25,9 +27,9 @@
 - [SPI 通信](#spi)
   - [信号与通信流程](#spi-basics) · [模式 0 时序](#spi-mode0) · [面试常见问题](#spi-questions) · [与 I2C 的区别及速率](#i2c-spi-comparison) · [I2C 与 SPI 的通信距离](#spi-i2c-distance)
 - [UART 串口通信](#uart)
-  - [电气接口：TTL、RS-232、RS-485](#uart-electrical) · [一字节时序与 8N1](#uart-frame) · [接收与业务帧解析](#uart-reception) · [排障要点](#uart-debug) · [面试常见问题](#uart-questions)
+  - [电气接口：TTL、RS-232、RS-485](#uart-electrical) · [一字节时序与 8N1](#uart-frame) · [接收与业务帧解析](#uart-reception) · [不定长数据与循环 DMA](#uart-circular-dma) · [排障要点](#uart-debug) · [面试常见问题](#uart-questions)
 - [CAN 总线基础](#can)
-  - [控制器与收发器](#can-hardware) · [报文、仲裁与应答](#can-protocol) · [如何回答接口熟悉程度](#communication-experience)
+  - [四种串行协议对比](#serial-protocol-comparison) · [控制器与收发器](#can-hardware) · [报文、仲裁与应答](#can-protocol) · [仲裁实例](#can-arbitration-example) · [如何回答接口熟悉程度](#communication-experience)
 - [CRC 校验](#crc)
   - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [CRC-4 手算过程](#crc-hand-calculation) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
 - [Bootloader 与 OTA 升级](#bootloader-ota)
@@ -35,16 +37,17 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
+  - [`volatile`](#volatile) · [`const` 与 `volatile`](#const-volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
+- [数据结构：栈与队列](#stack-queue)
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
 - [指针](#pointers)
-  - [不同类型的指针](#pointer-types) · [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers)
+  - [不同类型的指针](#pointer-types) · [指针自增与元素自增](#pointer-increment) · [指针与数组名](#pointer-vs-array) · [野指针与悬空指针](#wild-pointers) · [数组指针与指针数组](#array-pointers) · [函数指针数组](#function-pointer-array)
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [内核本质与 TCB](#freertos-kernel-tcb) · [状态与链表的关系](#freertos-state-lists) · [PendSV 切换源码解读](#freertos-pendsv)
   - [FreeRTOS 与 CMSIS-RTOS2 的关系](#freertos-cmsis-rtos2)
-  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
+  - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [FreeRTOS 堆与五种实现](#freertos-heap) · [`heap_4` 分配原理](#freertos-heap4) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
 - [自旋锁、互斥锁与多核临界区](#spinlocks)
   - [区别与应用场景](#spinlock-usage) · [单核为什么不能随意忙等](#spinlock-single-core) · [Zephyr 使用例子](#spinlock-zephyr)
@@ -61,7 +64,7 @@
   - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
-  - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
+  - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [无重复数字的三位数](#three-digit-permutations) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
 - [实习与项目独立笔记](experiences/README.md)
   - [无锡融卡：STM32H563 智能卡读卡器](experiences/internship-smartcard-reader/README.md)
   - [FreeRTOS 语音交互桌面机器狗](experiences/project-voice-robot-dog/README.md)
@@ -425,6 +428,24 @@ flowchart LR
 4. **处理事件：** 判断中断源，完成必须立即做的工作，按具体外设手册清除或应答中断标志。如果中断源始终有效且未正确处理，退出后可能立即再次进入。
 5. **异常返回：** 异常入口写入 `LR` 的 `EXC_RETURN` 指示返回模式和使用哪套栈；返回时硬件恢复现场，从被打断的位置继续。若还有待处理的中断，Cortex-M 可能采用尾链等机制直接转入下一个 ISR；若 FreeRTOS 因 ISR 唤醒了更高优先级任务，也可能先执行任务切换。[Arm 异常返回说明](https://documentation-service.arm.com/static/5f2ac4ab60a93e65927bbdbf)、[Arm 中断尾链说明](https://documentation-service.arm.com/static/5f2286f2f3ce30357bc28b2a)
 
+<a id="interrupt-exception-types"></a>
+### 中断与异常：HardFault 属于哪一种，同步还是异步？
+
+在 Cortex-M 的术语中，**异常（Exception）是总称，外设中断是其中一类**。UART、定时器、DMA 等的 IRQ 属于外部中断；HardFault、SVC、PendSV、SysTick 等属于内核异常。日常把异常处理都泛称为“中断”很常见，但面试时最好区分。
+
+| 事件 | 与当前指令的关系 | 举例 |
+| --- | --- | --- |
+| 定时器、UART 等外设 IRQ | 通常是异步事件 | 当前正在算加法，UART 此时收到数据，与这条加法指令无关 |
+| 执行 SVC 指令 | 同步触发 | 执行到该指令时请求系统服务 |
+| 精确的数据访问故障 | 与具体出错指令关联 | 某条加载指令访问不允许的地址，产生精确故障 |
+| 缓冲写导致的非精确总线故障 | 可能延后报告 | 写操作先进入缓冲，CPU 继续运行后才报告访问失败 |
+
+HardFault 是一种内核异常，不能简单说它永远同步：例如精确故障升级为 HardFault 时可关联具体指令，非精确总线故障升级后，保存的 PC 则未必指向最初那条写指令。不同 Cortex-M 内核支持的故障状态不同，具体仍看芯片文档。定位方法见[HardFault 章节](#hardfault)。
+
+这里“同步／异步”描述事件与指令执行的关系，与 I2C、SPI、UART 是否有共享时钟的“同步／异步通信”不是同一个问题。
+
+参考：[Arm／Keil：Cortex-M 故障与精确、非精确访问错误](https://www.keil.com/appnotes/files/apnt209.pdf)。
+
 <a id="interrupt-nesting"></a>
 ### 什么是中断嵌套？
 
@@ -671,6 +692,46 @@ RAM：程序运行时存放的大量数据
 
 **面试简答：** “我用过的 SiWG917、STM32H563 和联网端 ESP32 具备 Cache，但我在这些项目中没有主动做 Cache 优化或缓存一致性维护。芯片能力和我的实际开发经历需要分开；如果后续遇到 DMA 旧数据问题，我会先检查缓冲区是否经过已启用的数据 Cache，再按平台要求处理。”
 
+<a id="dma-transfer"></a>
+### DMA 怎样把数据搬走？
+
+CPU 直接接收串口数据时，通常需要反复读取外设数据寄存器，再存到 RAM；DMA 则是芯片中的硬件搬运单元，配置后能根据外设请求完成这些传输。**CPU 负责安排工作，DMA 负责按配置搬运，CPU 再处理搬完的数据。**
+
+```text
+CPU 配置：源地址、目标地址、传输宽度、数量、地址是否递增、请求源
+                           ↓
+UART / ADC / I2S 等外设产生 DMA 请求
+                           ↓
+DMA 通过总线读取源位置 → 写入目标位置 → 更新计数和地址
+                           ↓
+达到半满／完成／错误条件 → 按配置触发中断 → 通知任务处理
+```
+
+例如 UART 接收时，源是固定的外设接收数据寄存器，目标是逐步递增的 RAM 缓冲区；发送时通常相反，RAM 源地址递增，外设发送数据寄存器地址固定。数据宽度、触发请求、内存是否可达必须正确配置，不能只给出两个地址就认为能搬。
+
+DMA 减少 CPU 逐项搬运的工作，不意味着没有 CPU 开销，也不意味着数据永远不再复制。DMA 仍占用总线带宽，CPU 还要配置、处理中断、管理缓冲区和解析业务数据。
+
+参考：[Microchip：DMA 的请求、地址与传输机制](https://www.microchip.com/en-us/products/microcontrollers/8-bit-mcus/peripherals/system-flexibility/dma)。
+
+<a id="dma-double-buffer"></a>
+### 双缓冲：一边采集，一边处理
+
+单个缓冲区若刚写满就被下一批 DMA 覆盖，CPU 可能来不及处理。双缓冲准备 A、B 两块内存，让搬运与处理重叠：
+
+| 时间段 | DMA | CPU 任务 |
+| --- | --- | --- |
+| 第 1 段 | 填充 A | 等待首批数据或做其他工作 |
+| 第 2 段 | 填充 B | 处理已经完成的 A |
+| 第 3 段 | 再填充 A | 处理已经完成的 B |
+
+核心是**所有权交接**：DMA 正在写的块，CPU 不能同时把它当作完整数据处理；CPU 还没处理完的块，也不能被无条件交回 DMA 覆盖。完成中断可记录完成块并通知任务，耗时处理放在任务中。
+
+例如采样率为每秒 16000 个采样帧，每块有 256 个采样帧，一块约对应 `256 / 16000 = 16 ms`。DMA 填另一块的这段时间，是 CPU 处理上一块的预算；如果处理长期超过预算，双缓冲也会溢出，需要减少工作量、提高处理速度或设计更合适的缓冲及丢弃策略。
+
+**结合机器狗项目：** I2S 采集代码中的 `pp_buf_a`、`pp_buf_b` 就用于交替接收。完成回调记录完成块、切换下一块标记，采集任务看到就绪标志后，先启动下一块接收，再处理上一块。当前实现是软件重新启动下一次传输，不能直接说成硬件自动无间隙切换。完整项目背景见[机器狗笔记](experiences/project-voice-robot-dog/README.md)。
+
+双缓冲解决“搬运与处理如何交替”，[缓存一致性](#dma-coherency)解决“CPU 与 DMA 看到的数据是否相同”；两者是不同问题。若缓冲区位于需要维护 D-Cache 的内存中，交接时仍要执行平台要求的缓存同步。
+
 <a id="dma-coherency"></a>
 ### DMA 与缓存一致性
 
@@ -693,6 +754,58 @@ DMA 让外设与内存交换数据时无需 CPU 逐字节搬运；CPU 通常负�
 
 **与 [`volatile`](#volatile-cache) 区分：** `volatile` 约束编译器对对象访问的优化，重新读取变量仍可能命中 Cache；它不会自动把 Cache 中的脏数据写回，也不会让旧缓存行失效。因此遇到 DMA 旧数据问题，单纯给缓冲区加 `volatile` 不能代替正确的缓存同步。
 <!-- TOPIC:cache-dma:END -->
+
+<a id="gpio-output"></a>
+## GPIO：推挽与开漏
+<!-- TOPIC:gpio-output:START -->
+
+| 对比 | 推挽输出（Push-pull） | 开漏输出（Open-drain） |
+| --- | --- | --- |
+| 输出低电平 | 主动连接到低电平侧 | 主动拉低 |
+| 输出高电平 | 主动驱动高电平 | 关闭下拉管、释放引脚，由上拉电阻等外部偏置形成高电平 |
+| 常见用途 | 普通 GPIO 输出、SPI 时钟和数据等 | 常规 I2C 总线、需要多个器件共同拉低的信号 |
+| 多个输出直接相连 | 一高一低时可能发生电流冲突 | 兼容设计下可共享，任意一个拉低则线路为低 |
+
+```text
+        VDD
+         │
+       上拉电阻
+         │
+         ├──────── 总线 / 引脚
+         │
+     开漏下拉开关
+         │
+        GND
+
+开关闭合：拉低；开关断开：释放，由电阻上拉
+```
+
+因此开漏模式下“写 1”通常表示释放，不是像推挽那样主动输出高电平；没有上拉或其他可靠偏置，释放后的电平可能悬空。I2C 的 ACK 和仲裁就依赖这种可共同拉低的特性。
+
+上拉电阻小，充电上升更快，但拉低时电流更大；电阻太大，上升沿可能太慢，具体取值结合电容、速率和引脚灌电流能力。开漏也不等于可以任意跨电压连接，必须检查引脚耐压、输入阈值和器件供电限制。更多电气细节见[I2C 与 SPI 的驱动方式和速率差异](#i2c-spi-comparison)。
+
+参考：[ST AN4899：GPIO 推挽、开漏与引脚配置](https://www.st.com/resource/en/application_note/an4899-stm32-microcontroller-gpio-hardware-settings-and-lowpower-consumption-stmicroelectronics.pdf)。
+<!-- TOPIC:gpio-output:END -->
+
+<a id="mcu-performance"></a>
+## MCU 选型与性能：主频之外还看什么？
+<!-- TOPIC:mcu-performance:START -->
+
+回答“项目用什么芯片、主频和 Flash 多大”时，要区分**芯片能力上限、具体型号的容量和工程实际配置**：
+
+| 项目 | 已确认芯片 | 主频与 Flash 信息 |
+| --- | --- | --- |
+| 语音交互机器狗 | SiWG917Y121MGABA，应用侧 Cortex-M4 | 项目记录为 180 MHz、模组 8 MB Flash；片内应用 SRAM 为 192 KiB，Flash 容量不能当成任务可用 RAM |
+| 实习读卡器 | STM32H563ZI，Cortex-M33 | 芯片最高 250 MHz、2 MB 内部 Flash；当时工程实际时钟仍应以时钟树配置核对 |
+| 电磁循迹小车 | STM32F103，Cortex-M3 | 常见该系列最高 72 MHz；具体 Flash 容量取决于完整型号，当前后缀未确认，不能直接认定是 64 KB |
+| 空气质量监测 | ATmega328PB，8 位 AVR | 32 KB 内部 Flash；工程实际时钟需查看晶振和时钟配置，不能直接用器件最高频率代替 |
+
+型号背景和选型理由见[各项目独立笔记](experiences/README.md)。硬件参数依据：[SiWG917Y 数据手册](https://www.silabs.com/documents/public/data-sheets/siwg917y-datasheet.pdf)、[STM32H563 数据手册](https://www.st.com/resource/en/datasheet/stm32h563ag.pdf)、[STM32F103 系列说明](https://www.st.com/en/microcontrollers-microprocessors/stm32f103.html)、[ATmega328PB 数据手册](https://www.microchip.com/content/dam/mchp/documents/MCU08/ProductDocuments/DataSheets/40001906C.pdf)。
+
+**主频为什么影响速度？** 在所需 CPU 周期数不变时，耗时约等于“周期数 ÷ 主频”。例如某段工作需 18000 个周期，90 MHz 时约 200 μs，180 MHz 时约 100 μs。但一条 C 语句不等于一个周期；访存等待、不同指令和外设等待会改变这个估算。
+
+除主频外，还要看内核架构与每条指令的效率、FPU／DSP 指令、Flash 等待周期、Cache、RAM 与总线带宽、DMA、外设能力，以及算法、编译优化和任务调度。若瓶颈是 I2C 传输、等待网络响应或任务主动延时，单纯提高 CPU 主频不会让全过程按比例加速。选型还要满足 RAM／Flash 预算、接口数量、功耗和成本，不是 MHz 越大就越适合。
+<!-- TOPIC:mcu-performance:END -->
 
 <a id="adc"></a>
 ## ADC 模数转换与采样
@@ -1114,6 +1227,28 @@ RS-485 规定的是电气特性，不自行规定设备地址、业务命令或�
 
 STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软件处理**当前已收到的字节**；空闲只表示出现了时间间隔，**不能脱离协议就认定是一帧结束**。DMA 回调给出的长度还要按所用 HAL 版本和接收模式解释。[ST UART Receive-to-Idle 文档](https://dev.st.com/stm32cube-docs/stm32c5xx-hal-drivers/2.0.0/en/docs/drivers/hal_drivers/uart/api/hal_uart_exported_functions.html)
 
+<a id="uart-circular-dma"></a>
+### 不定长数据：循环 DMA 怎样避免漏算、重算？
+
+已有[接收与帧解析](#uart-reception)说明了中断接收适合较少数据，DMA 适合持续或成块接收；选择依据还包括波特率、数据量和允许的 CPU 开销，没有统一的分界速率。数据长度不固定时，可以让循环 DMA 持续写入接收缓冲区，通过半满、完成和 IDLE 等事件获知进展，再由任务解析业务帧。
+
+关键是记录“上次已经处理到哪里”，而不是每次回调都把整个缓冲区重新解析一遍。假设缓冲区为 256 字节，`read_pos` 为下一字节待处理位置，`write_pos` 为 DMA 下一字节将写入的位置：
+
+```text
+read_pos = 250，write_pos = 6
+
+缓冲区：[0 1 2 3 4 5 | 6 ... 249 | 250 251 252 253 254 255]
+新增数据：前面 0～5 的 6 字节 + 后面 250～255 的 6 字节
+解析顺序：先处理 250～255，再处理 0～5，共 12 字节
+完成后：read_pos 更新为 6
+```
+
+如果写位置未回绕，就处理 `[read_pos, write_pos)`；若回绕，分两段按先后顺序处理。回调参数究竟是累计位置、当前接收量还是其他含义，要按具体 HAL／SDK 确认，不能一律当成“本次新增字节数”。任务侧消费期间还必须保证相应数据尚未被 DMA 覆盖，可配合事件计数、块交接或复制到软件环形缓冲区。
+
+**只比较两个位置不能判断 DMA 已经绕了几圈。** 例如两次看到的位置相同，既可能没有新数据，也可能已经写满一整圈甚至更多；必须及时消费，并结合半满／完成事件、计数及溢出处理。IDLE 只表示线路空闲了一段时间，不能代替帧头、长度或结束符；一帧可能跨回调，多帧也可能同批到达，交给已有的帧解析状态机处理。
+
+参考：[ST：UART Receive-to-IDLE 循环 DMA 示例](https://github.com/STMicroelectronics/STM32CubeF4/blob/master/Projects/STM32446E-Nucleo/Examples/UART/UART_ReceptionToIdle_CircularDMA/readme.txt)。
+
 <a id="uart-debug"></a>
 ### 收不到、乱码、丢字节怎么排查？
 
@@ -1142,6 +1277,18 @@ STM32 等平台有“接收到空闲”相关中断/DMA API，可用来通知软
 
 CAN 是面向报文的多主通信总线，常用于车辆、机器人等多节点系统。多个节点共享总线，按报文标识符和仲裁规则竞争发送；同一条共享总线上通常一次只传一帧。这里以经典 CAN 和常见高速 CAN 物理层为例。
 
+<a id="serial-protocol-comparison"></a>
+### UART、I2C、SPI、CAN 怎么区分？
+
+| 协议 | 是否有单独的时钟线 | 常见连接与通信特点 | 典型场景 |
+| --- | --- | --- | --- |
+| UART | 无，异步收发 | 常见 TX/RX 点对点；双方约定波特率，用起始／停止位界定字符 | 调试、与通信模组交换数据 |
+| I2C | 有 SCL，同步 | SDA/SCL 共享总线，用地址选设备，常规模式开漏加上拉，字节后有 ACK/NACK | OLED、传感器等板内器件 |
+| SPI | 有 SCLK，同步 | 常见 SCLK/MOSI/MISO/CS；用片选选择设备，可全双工，无统一的地址、ACK 和数据帧协议 | Flash、屏幕、高速 ADC 等 |
+| CAN | 无独立时钟线，节点按位时序同步 | 多主共享总线，按报文 ID 仲裁；常见高速 CAN 使用差分物理层，有 CRC、ACK 和错误管理 | 车载、多节点控制网络 |
+
+CAN 不需要另一根时钟线，不代表节点“完全不同步”：它通过帧中的边沿进行同步与重同步。比较同步／异步时，先说明讨论的是共享时钟线，还是事件与指令之间的关系。UART 的收发格式与 TTL／RS-232／RS-485 的电气接口也要分开，见[UART 电气接口](#uart-electrical)。
+
 <a id="can-hardware"></a>
 ### 控制器与收发器分别做什么？
 
@@ -1162,6 +1309,24 @@ CAN 是面向报文的多主通信总线，常用于车辆、机器人等多节�
 - **基础排查：** 从接线、收发器供电及工作模式、终端匹配开始，再查双方位时序、接收过滤、ACK 和错误计数；只有一个节点正常发送而没有其他正常接收节点应答时，会遇到 ACK 错误。不能仅凭 MCU 发送接口返回成功就认定对端业务已完成。
 
 参考：[TI：CAN 帧格式、非破坏性仲裁、ACK 与错误管理](https://www.ti.com/lit/an/sloa101d/sloa101d.pdf)。
+
+<a id="can-arbitration-example"></a>
+### CAN 仲裁例子：为什么 ID 小的先发？
+
+假设 A、B 同时发送**同格式的标准数据帧**，ID 分别为 `0x120`、`0x128`。把 11 位 ID 从高位到低位写出来：
+
+```text
+A：0x120 = 0 0 1 0 0 1 0 0 0 0 0
+B：0x128 = 0 0 1 0 0 1 0 1 0 0 0
+                           ↑
+                    首个不同位：A 发 0，B 发 1
+```
+
+前面相同的位都正常发送。到首个不同位时，总线呈现显性 0；B 发出隐性 1 却读回 0，于是知道输掉仲裁，停止发送并转为接收，A 继续把帧发完。竞争没有破坏 A 的帧，所以称为非破坏性仲裁。
+
+这里是**报文 ID 的优先级**，与哪个任务优先级高、哪个 CPU 更快无关；高优先级报文也不能把已经发送到一半的其他帧立即抢断。不同帧格式还涉及其他仲裁位，不能只把任意两个 ID 当普通整数比较。若两个节点使用相同 ID 却发送不同数据，数据区不会继续按上述方式仲裁，可能产生位错误等问题，需要在应用协议中规划发送者。
+
+参考：[TI：CAN 仲裁机制](https://www.ti.com/lit/an/sloa101d/sloa101d.pdf)。
 
 <a id="communication-experience"></a>
 ### 如何回答“CAN、UART、I2C 哪个比较熟？”
@@ -1485,6 +1650,32 @@ CPU 执行读取指令，访问对象地址
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:volatile:END -->
 
+<a id="const-volatile"></a>
+### `const` 与 `volatile` 能一起用吗？
+<!-- TOPIC:const-volatile:START -->
+
+| 关键字 | 约束什么 | 不保证什么 |
+| --- | --- | --- |
+| `const` | 不能通过这个访问路径修改对象；例如 `const int *p` 不能用 `*p = 3` 改值 | 不代表一定存放在 Flash，也不保证能作为 C 的整数常量表达式 |
+| `volatile` | 告诉编译器该对象的访问具有需要保留的语义，不能按普通变量随意省略访问 | 不保证原子性、线程安全，也不自动绕过或刷新 Cache |
+| `const volatile` | 程序通过该路径只读，但值可能被硬件等外部因素改变，需要按要求重新访问 | 不代表值永远不变 |
+
+例如，驱动把一个有效的只读状态寄存器地址交给下面的函数：
+
+```c
+#include <stdint.h>
+
+uint32_t read_status(const volatile uint32_t *status)
+{
+    return *status;  // 可以读取；不能在这里通过 *status 写入
+}
+```
+
+硬件可能随时更新状态，所以需要 `volatile`；程序不应写这个寄存器，所以使用 `const`。两者并不矛盾。`volatile` 的完整使用边界见[已有章节](#volatile)，不要把它理解为缓存同步或加锁。
+
+参考：[C11 标准草案：类型限定符](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+<!-- TOPIC:const-volatile:END -->
+
 <a id="register-access-c"></a>
 ### C 语言访问寄存器：指针、宏与位操作
 <!-- TOPIC:register-access-c:START -->
@@ -1707,6 +1898,14 @@ int main(void) {
 `_Alignof` 是 C11 写法；C++ 可用 `alignof`。`offsetof` 可以核对成员偏移，`sizeof` 可以核对尾部填充；这些结果以实际编译目标为准。
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
+<a id="alignment-bus-width"></a>
+#### 为什么要对齐，与数据总线位宽有什么关系？
+
+对齐让硬件更容易按自然边界访问数据。例如某平台按 4 字节边界读取一个 `int` 很直接；若这个值跨过边界，可能需要拆成多次访问、拼接数据，甚至因指令或内存区域不支持非对齐访问而触发故障。**不能简单说“没对齐必定 HardFault”**：有的处理器支持部分非对齐访问，编译器也可能生成多条字节访问指令。
+
+总线位宽影响一次传输能力，但**成员对齐要求由目标 ABI、类型和编译器设置等共同决定**，不是“32 位 CPU 所有成员都按 4 字节对齐”。例如同一套常见 Arm ABI 中，`char`、`short`、`int`、`double` 可以分别要求 1、2、4、8 字节对齐。`packed` 能减少填充，但可能增加访问成本；从任意字节地址强转成 `int *` 并解引用，也可能违反 C 的对齐要求。解析串口等字节流时，可把字节复制到正常对齐的对象中再使用。
+
+参考：[Arm ABI 的基本类型对齐要求](https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst)。
 <!-- TOPIC:struct-alignment:END -->
 
 <a id="malloc-free"></a>
@@ -1756,6 +1955,22 @@ void process(void) {
 
 在长时间运行的服务或 MCU 程序中，反复调用可能逐渐耗尽可用内存。Linux 进程退出后，操作系统会回收该进程的资源，但不能因此忽略运行期间的泄漏。应在所有退出路径配对释放资源，并明确“谁申请、谁负责释放”；排查时可在主机上用内存检查工具，嵌入式系统则可记录分配与释放次数、剩余内存和失败路径。动态分配与[六大内存分区](#memory-layout)中所说的“堆”相关，但具体分配实现由平台决定。
 <!-- TOPIC:memory-leak:END -->
+
+<a id="stack-queue"></a>
+## 数据结构：栈与队列
+<!-- TOPIC:stack-queue:START -->
+
+| 对比 | 栈（Stack） | 队列（Queue） |
+| --- | --- | --- |
+| 顺序 | 后进先出，LIFO | 先进先出，FIFO |
+| 从哪里操作 | 在同一个栈顶压入、弹出 | 从队尾入队，从队头出队 |
+| 依次放入 A、B、C 后取出 | C、B、A | A、B、C |
+| 典型用途 | 函数调用、撤销操作、括号匹配 | 消息排队、按到达顺序处理请求 |
+
+可以把栈想成叠盘子，最后放上去的先取；队列像排队买票，先来的先服务。两者都可以用数组或链表实现，不是“栈只能用数组、队列只能用链表”。
+
+这里的“栈”指一种数据结构；[内存分区中的栈](#memory-stack-heap)指函数调用时使用的内存区域，利用了类似的后进先出规律。FreeRTOS 的[消息队列](#freertos-queue)则在队列基础上提供同步、等待和唤醒等机制。
+<!-- TOPIC:stack-queue:END -->
 
 <a id="arrays"></a>
 ## 数组
@@ -1847,6 +2062,33 @@ unsigned char *pc = (unsigned char *)&i;
 `(unsigned char *)&i` 只改变访问视角，不会移动地址或改变 `i` 的内容。这里使用字符类型，是因为 C 允许通过字符类型访问对象的字节表示，观察原始字节通常选 `unsigned char`；不能据此推断任意对象指针之间强转后都能安全解引用，还要满足对齐和类型访问规则。
 
 **不要混淆数值转换和字节观察：** `(char)i` 把数值 1 转为 `char`，仍得到 1，无法区分大小端；`*((unsigned char *)&i)` 才是在读取对象的第一个字节。完整可调用函数见[判断大小端](#endianness-code)。上述规则可对照 [C11 草案 N1570：6.3.2.3、6.5 第 7 段、6.5.6 与 6.5.3.4](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+
+<a id="pointer-increment"></a>
+### `*p++` 与 `(*p)++`：到底是谁在加一？
+
+后缀 `++` 的优先级高于一元 `*`，因此 `*p++` 等价于 `*(p++)`：读取原来指向的元素，然后让指针指向下一个元素。`(*p)++` 则修改指向的元素，指针本身不动。两种后缀表达式的结果都是修改前的值。
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    int a[] = {10, 20, 30};
+    int *p = a;
+
+    int x = *p++;
+    printf("x=%d, *p=%d, a[0]=%d\n", x, *p, a[0]);
+    // x=10, *p=20, a[0]=10：移动的是指针
+
+    p = a;
+    int y = (*p)++;
+    printf("y=%d, *p=%d, a[0]=%d\n", y, *p, a[0]);
+    // y=10, *p=11, a[0]=11：修改的是元素
+    return 0;
+}
+```
+
+`p++` 前进一个所指类型的元素：这里通常前进 `sizeof(int)` 个字节，不是固定前进 1 字节。指针运算必须保持在对应数组及其尾后一位的允许范围内，尾后一位不能解引用；也不要把对 `p` 的修改和另一次依赖它的读取塞进同一个未明确求值顺序的表达式。
 
 <a id="pointer-vs-array"></a>
 ### 指针与数组名有什么区别？
@@ -1955,6 +2197,34 @@ void matrix_example(void) {
 
 **一句话回答：** “指针数组首先是 **数组**，里面装多个指针；数组指针首先是 **指针**，指向一整组连续元素。看声明时以变量名为中心，`p[3]` 是数组，`(*q)` 是指针；再用 `sizeof`、`+1` 和二维数组传参验证理解。”
 <!-- TOPIC:array-pointers:END -->
+
+<a id="function-pointer-array"></a>
+### 四种声明对照：再加上函数指针数组
+
+| 声明（分别单独看） | `a` 是什么 | 可以怎么理解 |
+| --- | --- | --- |
+| `int *a;` | 指向 `int` 的指针 | 保存一个整数对象的地址 |
+| `int *a[10];` | 含 10 个 `int *` 元素的数组 | 10 个位置分别存指针 |
+| `int (*a)[10];` | 指向 `int[10]` 的指针 | 指向一整行 10 个整数，`a + 1` 跨过一整行 |
+| `int (*a[10])(int);` | 含 10 个函数指针的数组 | 每个函数接收一个 `int`，返回一个 `int` |
+
+最后一个从变量名向外读：`a[10]` 先说明是数组，`*` 说明数组元素是指针，后面的 `(int)` 和前面的 `int` 说明它指向哪种函数。
+
+```c
+#include <stdio.h>
+
+static int add_one(int x) { return x + 1; }
+static int double_value(int x) { return x * 2; }
+
+int main(void)
+{
+    int (*a[10])(int) = {add_one, double_value};
+    printf("%d %d\n", a[0](5), a[1](5)); // 6 10
+    return 0;
+}
+```
+
+此例剩余 8 个元素初始化为空指针，不能调用。函数指针数组可用于命令分发：按命令编号选择处理函数，调用前检查下标与指针是否有效。前三种的连续内存、`sizeof` 和二维数组传参细节见[数组指针与指针数组](#array-pointers)。
 
 <!-- TOPIC:pointers:END -->
 
@@ -2199,6 +2469,11 @@ flowchart LR
 | FreeRTOS 的任务控制块 | 指向该任务已保存现场的栈顶指针 | 切回任务时找到它自己的栈。 |
 
 **不会复制整个任务内存。** 局部变量和调用链原本就在各任务自己的栈中，保留栈与栈顶位置即可；全局变量和堆内存也不会在每次切换时整体复制。比如显示任务等待队列而切出，收到绘制请求后先进入 `Ready`，被选中时恢复自己的现场，继续执行等待调用后面的代码。
+
+<a id="task-saved-stack-pointer"></a>
+#### 每个任务是否各有一个栈指针？
+
+每个任务有自己的栈内存，以及保存在 TCB 中的栈位置；**不是每创建一个任务，CPU 就增加一套硬件 SP 寄存器**。在这里讨论的 Cortex-M FreeRTOS 移植中，任务通常通过 PSP 使用自己的栈，处理异常通常使用 MSP。切换任务时，把旧任务保存现场后的栈位置记录到旧 TCB，再根据新 TCB 恢复新任务的栈和 PSP。硬件寄存器被轮流使用，各任务的保存值留在各自的软件数据结构中。
 
 <a id="freertos-pendsv"></a>
 #### PendSV 是什么？结合 Cortex-M4F 源码看任务切换
@@ -2484,6 +2759,90 @@ BaseType_t UseBothResources(SemaphoreHandle_t i2cMutex,
 
 参考：[FreeRTOS 任务创建说明](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch04.md)。
 <!-- TOPIC:freertos-task-creation:END -->
+
+<a id="freertos-heap"></a>
+### FreeRTOS 堆与 `heap_1`～`heap_5`
+<!-- TOPIC:freertos-heap:START -->
+
+#### 堆是什么，没写 `malloc` 为什么也会用到？
+
+FreeRTOS 的堆是供内核动态分配使用的一片内存，常见实现是在 RAM 中预留一个内存池，由 `pvPortMalloc()` 分配、`vPortFree()` 释放。创建任务、队列等对象时，内核可能在这些 API 内部申请空间；业务代码没直接写 `malloc()`，不代表没有动态分配。
+
+**堆说的是内存从哪里分配，任务栈说的是这块内存拿来做什么。** 动态创建的任务，通常从 FreeRTOS 堆中取得 TCB 和任务栈；栈分配出来后，由该任务用于函数调用和保存现场。静态创建时，由调用者提供长期有效的 TCB 和栈数组，可以不经过动态堆。它们在 RAM 中的关系见[堆与栈详解](#memory-stack-heap)，创建接口和单位见[创建任务](#freertos-task-creation)。某些移植也可单独配置任务栈的分配来源，不能把“栈必定来自堆”当成通用规则。
+
+FreeRTOS **并非运行就必须使用动态堆**：内核对象可以全部采用支持的静态创建接口，但还要满足 Idle、可选定时器服务任务等的内存提供要求；项目中的 SDK、网络库也可能另有动态分配需求。
+
+#### 五个文件是五种实现，不是五块同时使用的堆
+
+| 实现 | 主要特点 | 适合怎样理解 |
+| --- | --- | --- |
+| `heap_1.c` | 只分配，不支持释放，逻辑简单 | 系统启动时创建好对象，之后不销毁 |
+| `heap_2.c` | 支持释放，按最佳适配选块；不合并相邻空闲块 | 反复分配不同大小对象时，碎片可能累积 |
+| `heap_3.c` | 对 C 库 `malloc/free` 做封装 | 使用工具链的堆；大小不是由 `configTOTAL_HEAP_SIZE` 决定 |
+| `heap_4.c` | 首次适配，支持释放并合并相邻空闲块 | 管理一片连续的内存池，是常见选择 |
+| `heap_5.c` | 类似 `heap_4`，但能管理多个不连续区域 | 需先用 `vPortDefineHeapRegions()` 提供区域；单次申请不能横跨断开的区域 |
+
+它们向内核提供相同的分配接口，工程通常选择并编译其中一种实现；不是每创建一个任务就选一种，也不是把五个文件一起链接。开发者可以根据需求更换实现、调整配置，或提供自己的分配器，但必须核对 RAM 总预算、库的需求及释放接口的配对关系。
+
+参考：[FreeRTOS 内核手册：静态／动态分配与五种堆实现](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch03.md)。
+
+#### 机器狗工程实际怎么用？
+
+已核对 `wifi_http_otaf_soc_4_28` 源码：
+
+- `wifi_http_otaf_soc.slcp` 选择了 `freertos_heap_4` 组件；`config/FreeRTOSConfig.h` 的 `configTOTAL_HEAP_SIZE` 是 **51200 字节，即 50 KiB**。这是这片 FreeRTOS 堆的容量，不是整个芯片 RAM 大小。
+- `configSUPPORT_DYNAMIC_ALLOCATION` 和 `configSUPPORT_STATIC_ALLOCATION` 都为 `1`，表示两种创建方式都允许，不是每个对象分配两份空间。
+- 例如 MQTT 任务的 `.stack_size = 4096`，但 `.stack_mem = 0`、`.cb_mem = 0`、`.cb_size = 0`，没有提供静态内存。此版本 CMSIS-RTOS2 适配层走动态分支，调用 `xTaskCreate()`。
+- 随后内核分配 TCB 和任务栈；当前工程没有启用独立任务栈堆的覆盖配置，所以任务栈也来自这套分配器。任务栈、TCB、队列等会共同消耗这 50 KiB，不能把“总容量减去任务栈之和”直接当成剩余可用堆。
+
+```text
+工程预留的 FreeRTOS 堆（50 KiB）
+  ├─ app 的 TCB 与栈
+  ├─ mqtt 的 TCB 与 4096 字节栈
+  ├─ 其他动态创建任务的 TCB 与栈
+  ├─ 动态创建的队列等对象
+  └─ 分配管理开销与尚未分配的空间
+```
+
+**面试可以说：** “我没有在业务里手写任务内存的申请；工程使用 `heap_4`，通过 `osThreadNew()` 动态创建任务，适配层最终调用 `xTaskCreate()`，由内核分配 TCB 和栈。”
+
+<a id="freertos-heap4"></a>
+#### `heap_4` 底层怎样找出一块内存？
+
+它主要管理一个按地址排列的**空闲块单向链表**。每个块有管理头，包含块大小和下一个空闲块指针；管理头位于池内，不是再另外调用 `malloc` 创建一个链表节点。已分配块也保留大小等管理信息，但不留在空闲链表中。
+
+以下仅是理解流程的伪代码：
+
+```text
+pvPortMalloc(请求字节数):
+    检查大小溢出，加上管理头，并向上补齐到要求的对齐边界
+    在内核保护下，遍历按地址排列的空闲块链表
+    找到第一个足够大的块；没有则返回 NULL
+    将该块从空闲链表摘下
+    若剩余空间足够形成有效空闲块，则拆分并保留剩余块
+    标记本块已分配，更新空闲空间统计
+    返回管理头后面的用户数据地址
+
+vPortFree(指针):
+    根据用户指针找到前面的管理头
+    将块按地址顺序插回空闲链表
+    若与前后空闲块在物理地址上相邻，则合并
+```
+
+例如，**假设**管理头为 8 字节、要求 8 字节对齐：申请 13 字节，需要先算 `13 + 8 = 21`，向上补齐为 24 字节。管理头大小取决于平台，实际不能写死这个示例数字。分配器还会处理大小溢出、分配状态和最小拆分条件等细节。
+
+释放时“相邻”指地址连续，不只是链表中前后相邻。假设忽略管理开销，布局为：
+
+```text
+[空闲 40][仍在使用 20][空闲 40]
+```
+
+总空闲有 80，但此时仍不能申请一个连续的 60 字节块。`heap_4` 会合并相邻空闲块，**不会移动仍在使用的对象来整理内存**，所以不能说它彻底消除了碎片。链表遍历也意味着耗时受空闲块数量影响，不是固定时间。
+
+实际工程还要检查申请失败、监测剩余堆和历史最小剩余堆，并保持 `pvPortMalloc/vPortFree`、`malloc/free` 各自正确配对。不要在 ISR 中使用普通堆分配；本工程单核 `heap_4` 分配过程中使用调度器挂起等保护，不代表屏蔽了所有中断，也不能据此认为任意多核环境已自动安全。
+
+源码参考：[FreeRTOS `heap_4.c`](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/MemMang/heap_4.c)。
+<!-- TOPIC:freertos-heap:END -->
 
 <a id="task-stack-sizing"></a>
 ### 任务栈大小如何确定？
@@ -3309,6 +3668,49 @@ int main(void) {
 
 现场写 `n & 1` 通常就能表达思路；这里先转换成 `unsigned int`，使负数输入也无需依赖有符号整数的具体二进制表示。注意 `&` 是**按位与**，`&&` 是**逻辑与**，不能把两者当成同一运算。时间复杂度和额外空间复杂度均为 `O(1)`。
 <!-- TOPIC:bitwise-parity:END -->
+
+<a id="three-digit-permutations"></a>
+### 用 1、2、3、4 组成无重复数字的三位数
+<!-- TOPIC:three-digit-permutations:START -->
+
+**题意：** 每个三位数内部不能出现相同数字，输出所有结果。不同结果之间可以重复使用某个数字，例如 `123` 与 `124` 都允许。
+
+**思路：** 三层循环分别选百位、十位、个位；只有三对数字都不相等时，才输出 `100 * 百位 + 10 * 十位 + 个位`。
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    int count = 0;
+    for (int hundreds = 1; hundreds <= 4; ++hundreds) {
+        for (int tens = 1; tens <= 4; ++tens) {
+            for (int ones = 1; ones <= 4; ++ones) {
+                if (hundreds != tens && hundreds != ones && tens != ones) {
+                    printf("%d ", 100 * hundreds + 10 * tens + ones);
+                    ++count;
+                }
+            }
+        }
+        putchar('\n');
+    }
+    printf("count=%d\n", count);
+    return 0;
+}
+```
+
+输出：
+
+```text
+123 124 132 134 142 143
+213 214 231 234 241 243
+312 314 321 324 341 342
+412 413 421 423 431 432
+count=24
+```
+
+百位有 4 种选择，十位剩 3 种，个位剩 2 种，所以共有 `4 × 3 × 2 = 24` 个。代码检查 64 种组合，只使用几个整型变量，额外空间为 `O(1)`。不能写成 `a != b != c`；C 会先计算前一个比较，结果变成 0 或 1 后再与 `c` 比较。
+<!-- TOPIC:three-digit-permutations:END -->
 
 <a id="merge-sorted-lists"></a>
 ### 合并两个有序链表
