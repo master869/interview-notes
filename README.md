@@ -53,6 +53,8 @@
   - [指标与解题约定](#scheduling-metrics) · [FCFS](#scheduling-fcfs) · [SJF](#scheduling-sjf) · [SRTF](#scheduling-srtf) · [优先级调度](#scheduling-priority) · [RR](#scheduling-rr) · [MLFQ](#scheduling-mlfq)
 - [Linux 启动、进程与线程](#linux)
   - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [线程池与内存池](#linux-thread-pool) · [多线程与多进程](#threads-vs-processes)
+- [TCP 与 UDP：背景、可靠性与安全性](#tcp-udp)
+  - [所在层次](#tcp-udp-background) · [TCP 的可靠传输](#tcp-reliability) · [UDP 的数据报](#udp-datagrams) · [区别与选型](#tcp-udp-comparison) · [粘包与拆包](#tcp-message-boundaries) · [可靠不等于安全](#tcp-udp-security) · [结合机器狗 MQTT](#tcp-udp-project)
 - [TCP 服务端建立连接](#tcp-server-connection)
 - [驱动开发与调试：SI91x I2C OLED 项目](#driver-experience)
   - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
@@ -2842,6 +2844,111 @@ Linux C 程序常用 `pthread_create(&tid, NULL, worker, arg)`：第一个参数
 
 参考：[Linux `pthreads(7)`](https://man7.org/linux/man-pages/man7/pthreads.7.html)、[`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html)。
 <!-- TOPIC:threads-vs-processes:END -->
+
+<a id="tcp-udp"></a>
+## TCP 与 UDP：背景、可靠性与安全性
+<!-- TOPIC:tcp-udp:START -->
+
+**面试问题：TCP 和 UDP 有什么区别？为什么有人说 TCP 更“安全”？** 首先区分两件事：**传输可靠性**关注丢失、乱序、重复等问题；**通信安全性**关注窃听、恶意篡改和冒充。TCP 提供可靠、有序的传输，但不自带加密和可信身份认证，不能直接说它天然比 UDP 更安全。
+
+<a id="tcp-udp-background"></a>
+### 所在层次：应用通过 TCP／UDP 使用 IP 网络
+
+TCP（传输控制协议）与 UDP（用户数据报协议）都是传输层协议。IP 地址用于定位网络中的主机／接口，端口用于区分传输层通信端点；应用再按自己的协议解释收到的内容。
+
+```text
+应用层：       MQTT、HTTP、自定义业务协议
+                         ↓
+传输层：              TCP 或 UDP
+                         ↓
+网络层：                 IP
+                         ↓
+网络接口：          Wi-Fi、以太网等
+```
+
+上图只表示层次关系，不表示每个应用协议都能任意切换 TCP／UDP。具体传输方式由应用协议和实现决定。[TCP 标准 RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html)；[UDP 标准 RFC 768](https://www.rfc-editor.org/rfc/rfc768.html)
+
+<a id="tcp-reliability"></a>
+### TCP：面向连接、可靠有序的字节流
+
+TCP 通常先通过三次握手建立连接，再传输数据。**序号**标识字节流中的位置，**确认应答 ACK**反馈接收进度，**重传**补发丢失的数据，接收端按序组织字节并处理重复传输；**流量控制**避免发送速度超过接收端承受能力。**拥塞控制**则根据网络状况调整发送量，避免持续加重网络拥塞，两者不能混为一谈。[TCP 规范](https://www.rfc-editor.org/rfc/rfc9293.html)；[TCP 拥塞控制 RFC 5681](https://www.rfc-editor.org/rfc/rfc5681.html)
+
+```text
+上传录音的简化例子（A、B、C 代表连续的数据片段）：
+
+发送：A → B → C
+网络：A 到达，B 丢失，C 到达
+             ↓
+TCP 通过确认信息、超时等机制处理丢失，重传 B
+             ↓
+接收程序按 A、B、C 的顺序读取字节
+```
+
+**代价与边界：** 后面的数据即使已到达，也可能等待前面的缺口补齐后才能交给应用，增加延迟；网络中断时连接仍可能失败。TCP ACK 表示传输层的接收进度，**不代表对端业务已执行成功**。例如开门命令被接收，不等于门已打开，仍需应用层返回执行结果；本地 `send()` 成功也不能当作对端业务完成。
+
+<a id="udp-datagrams"></a>
+### UDP：无连接、保留边界的数据报
+
+UDP 不要求 TCP 那样的连接握手，按一份份数据报发送；**基础 UDP 不保证送达、顺序或去重，也不自动重传**。应用可以按需要另外实现序号、确认、重试、速率控制等机制。UDP 套接字也可以调用 `connect()` 设置默认对端，但这不等于进行 TCP 三次握手。[UDP 规范](https://www.rfc-editor.org/rfc/rfc768.html)；[Linux udp(7)](https://man7.org/linux/man-pages/man7/udp.7.html)
+
+例如机器狗周期发送姿态 `10° → 12° → 14°`，中间的 `12°` 丢失：如果界面只关心最新状态，可以直接显示 `14°`，不必等待补回旧数据；如果用于完整记录或分析，就不能默认允许丢失。这是业务设计例子，并不表示当前机器狗工程已经用 UDP 传输姿态。
+
+UDP 保留每份报文的边界，不会把相邻两份数据报变成一条无边界字节流；但接收缓冲区过小仍可能导致数据报截断，必须按接口规则处理，不能把“保留边界”理解成“一定完整收到”。[Linux UDP 接收语义](https://man7.org/linux/man-pages/man7/udp.7.html)
+
+<a id="tcp-udp-comparison"></a>
+### 区别与选型
+
+| 对比项 | TCP | 基础 UDP |
+| --- | --- | --- |
+| 通信方式 | 面向连接。 | 无连接数据报。 |
+| 数据形式 | 字节流，不保留应用消息边界。 | 保留数据报边界。 |
+| 丢失处理 | 协议提供重传等机制。 | 不自动重传，需要上层按需处理。 |
+| 顺序与重复 | 向应用交付有序字节流，处理网络中的重复传输。 | 不保证按序，也不保证不重复。 |
+| 流量／拥塞控制 | 提供相应机制。 | 基础协议不提供，需要上层合理设计。 |
+| 开销与等待 | 维护连接、确认、重传等状态；缺失数据可能阻挡后续数据交付。 | 协议机制较少，可避免等待旧数据，但不保证一定更快。 |
+| 适用需求举例 | 文件、固件或完整录音等需要可靠有序传输的数据。 | 可处理丢包的实时状态、实时媒体等；是否合适取决于上层设计。 |
+| 加密与可信身份认证 | TCP 本身不提供。 | UDP 本身不提供。 |
+
+**不要只背“TCP 慢、UDP 快”。** 性能取决于网络、数据量和应用实现；如果在 UDP 上补齐可靠传输机制，也会增加状态和等待。选择时先明确是否允许丢失、是否需要顺序、数据是否有时效，以及谁负责异常恢复。
+
+<a id="tcp-message-boundaries"></a>
+### TCP 为什么需要处理粘包与拆包？
+
+```text
+应用分两次发送： "HELLO"、"WORLD"
+
+接收可能一次得到："HELLOWORLD"
+也可能分多次得到："HEL"、"LOWO"、"RLD"
+```
+
+**一次发送不对应一次接收，TCP 只保证字节流语义。** 所谓粘包、拆包是应用识别消息边界的问题，不是 TCP 把数据传坏了。常见方案是固定长度、分隔符或“长度字段 + 内容”；接收端积累数据后循环解析完整帧，保留不完整部分等待下一次接收。使用分隔符时还需约定转义或限制内容。UDP 保留报文边界，但不因此获得可靠传输能力。[Linux tcp(7)：不保留消息边界](https://man7.org/linux/man-pages/man7/tcp.7.html)
+
+<a id="tcp-udp-security"></a>
+### TCP 为什么更“安全”？先区分可靠性与安全性
+
+如果面试官指的是“数据丢失后如何处理、如何按顺序交付”，应解释 TCP 的序号、ACK 和重传等**可靠性机制**。如果指的是保密、防篡改和身份认证，**不能仅凭使用 TCP 就认为已经安全**：
+
+| 问题 | TCP 本身的能力边界 |
+| --- | --- |
+| 能否防止别人偷看业务内容？ | 不自带内容加密。 |
+| 能否防止恶意篡改、伪造？ | 普通校验和用于检错，不是密码学消息认证。 |
+| 三次握手是否证明对方是合法服务器？ | 不能；建立连接不等于认证真实身份。 |
+
+```text
+TCP + TLS        → 例如 HTTPS、使用 TLS 的 MQTT
+UDP + DTLS       → 为数据报通信提供加密等安全保护
+基于 UDP 的 QUIC → 设计了可靠传输机制，并结合 TLS 提供安全保护
+```
+
+TLS 可提供保密、完整性保护和身份认证能力，但应用必须正确配置认证并验证对端，例如验证服务器证书或使用约定密钥；不能只开启加密却跳过身份验证。UDP 同样能结合安全协议，安全性取决于完整方案及实现。参见 [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html)、[DTLS 1.3](https://www.rfc-editor.org/rfc/rfc9147.html)、[QUIC](https://www.rfc-editor.org/rfc/rfc9000.html)。
+
+<a id="tcp-udp-project"></a>
+### 结合机器狗项目中的 MQTT 回答
+
+普通 MQTT 通信通常建立在 TCP 上：MQTT 负责发布、订阅、消息格式及 QoS 等机制，TCP 负责底层可靠有序的字节流传输。**MQTT 的消息交付语义不能全部归功于 TCP，TCP ACK 也不能代替 MQTT 或业务层应答。** 是否保密、防篡改和认证，要另查工程是否启用 TLS 及正确验证对端，不能仅凭使用 MQTT／TCP 推断。[MQTT 3.1.1 官方规范](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html)
+
+**面试简答：** “TCP 和 UDP 都是传输层协议。TCP 面向连接，提供可靠、有序的字节流；UDP 面向数据报，不保证送达和顺序，应用可根据时效和完整性需求补充机制。TCP 的可靠性不等于通信安全性，保密、防篡改和身份认证需要 TLS 等安全机制。我的机器狗项目使用 MQTT，解释时会区分 MQTT 的业务消息机制、TCP 传输机制，以及工程实际采用的安全配置。”服务端 Socket 调用流程见下一节 [TCP 服务端建立连接](#tcp-server-connection)。
+<!-- TOPIC:tcp-udp:END -->
 
 <a id="tcp-server-connection"></a>
 ## TCP 服务端建立连接
