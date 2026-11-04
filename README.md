@@ -48,6 +48,7 @@
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
 - [自旋锁、互斥锁与多核临界区](#spinlocks)
   - [区别与应用场景](#spinlock-usage) · [单核为什么不能随意忙等](#spinlock-single-core) · [Zephyr 使用例子](#spinlock-zephyr)
+  - [多核执行与 API 在哪个核运行](#multicore-execution) · [面试例一：ISR 与任务跨核写队列](#multicore-queue-case) · [面试例二：跨核共用 SPI 写 Flash](#multicore-spi-flash-case) · [共同追问与选型](#multicore-interview-summary)
 - [抢占、时间片与协作式调度：四套系统对照](#scheduling-comparison)
 - [CPU 调度算法：FCFS、SJF、SRTF、优先级、RR、MLFQ](#cpu-scheduling-algorithms)
   - [指标与解题约定](#scheduling-metrics) · [FCFS](#scheduling-fcfs) · [SJF](#scheduling-sjf) · [SRTF](#scheduling-srtf) · [优先级调度](#scheduling-priority) · [RR](#scheduling-rr) · [MLFQ](#scheduling-mlfq)
@@ -457,6 +458,8 @@ flowchart LR
 | 传一条具体消息 | `xQueueSendFromISR()` | 按键中断把按键编号交给界面任务。 |
 | 传连续字节 | 流缓冲区，或 DMA 缓冲区加完成通知 | 串口接收数据，任务解析协议。 |
 | 只保留最新状态 | 同步保护的共享状态加通知，或通知值覆盖旧值 | 显示屏只需最新温度，不必处理每次旧读数。 |
+
+若 ISR 和任务位于不同 CPU 核，除了中断安全接口，还要保证共享对象的跨核同步；具体见[跨核写队列](#multicore-queue-case)和[跨核共用 SPI 写 Flash](#multicore-spi-flash-case)。
 
 **DMA 接收完成例子：** 先创建接收任务、保存 `rxTaskHandle`，再使能 DMA 中断。以下函数名只表示驱动操作，要替换为实际芯片的实现；假设接收完成后 DMA 不会继续改写这块缓冲区。
 
@@ -2368,6 +2371,8 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 **例子：** 传感器任务依次测得 `26℃ → 27℃ → 28℃`，要把每条记录交给日志任务保存，就把每个温度值送进队列，日志任务逐条取出。若显示屏只需要显示 **最新温度**，没有必要排队重画已经过时的读数：可以用共享“最新值”加任务通知，或直接用任务通知携带一个值并允许新值覆盖旧值。共享变量的读写仍须按数据类型和平台做好同步；`volatile` 不能代替同步。[FreeRTOS 队列复制数据的说明](https://www.freertos.org/media/2018/161204_Mastering_the_FreeRTOS_Real_Time_Kernel-A_Hands-On_Tutorial_Guide.pdf)、[任务通知覆盖值](https://www.freertos.org/Documentation/02-Kernel/04-API-references/05-Direct-to-task-notifications/04-xTaskNotify)
 
 **一眼区分：** 保护共用 I2C 总线用 Mutex；中断说“DMA 完成了”用二值信号量或任务通知；传递每条具体数据用队列。中断操作队列或信号量要使用对应的 `...FromISR` API，不能在中断中阻塞等待。
+
+**多核追问：** `FromISR` 解决中断上下文的调用要求，不能仅凭函数名断定实现已经支持跨核并发；CPU0 的 ISR 与 CPU1 的任务同时入队时，还要使用支持当前 SMP 平台的队列实现。竞态例子与处理方法见[多核队列面试题](#multicore-queue-case)。
 <!-- TOPIC:freertos-communication:END -->
 
 <a id="freertos-deadlock"></a>
@@ -2609,6 +2614,127 @@ void UpdateSharedState(uint32_t status) {
 参考：[Zephyr 自旋锁规则、单核优化与场景](https://docs.zephyrproject.org/latest/kernel/services/synchronization/spinlocks.html)；[Zephyr Spinlock API 与 key](https://docs.zephyrproject.org/latest/doxygen/html/group__spinlock__apis.html)；[Zephyr SMP 同步](https://docs.zephyrproject.org/latest/kernel/services/smp/smp.html)；[FreeRTOS Mutex](https://freertos.org/Real-time-embedded-RTOS-mutexes.html)。
 
 **面试回答：** “Mutex 在竞争时可以阻塞任务，让出 CPU；自旋锁在当前 CPU 上忙等，适合多核系统中的极短临界区或不能睡眠的内核路径。自旋锁要遵守本核中断、抢占及持锁限制，不能把外设等待放在锁内。单核 RTOS 也可能保留自旋锁接口，但实现可能退化为中断保护。共享 I2C 事务我优先用 Mutex，跨核更新少量共享数据才考虑平台的自旋锁。”
+
+<a id="multicore-execution"></a>
+### 多核前提：同一个应用、不同任务与当前执行核
+
+下面两道面试题统一归为 **多核并发、共享资源互斥与 ISR 安全同步**，既关联[临界区与中断屏蔽](#interrupt-critical-section)，也关联[任务间通信](#freertos-communication)。默认讨论两个核能访问同一份资源，且由同一个支持 SMP 的内核协调的场景；若各核运行独立系统，则需另查共享内存协议和跨核 IPC，不能直接共用一个普通 FreeRTOS 队列句柄。
+
+**双核共同运行一个应用，通常指并行执行应用中的不同任务，不是同一个任务实例同时在两个核执行。** 一个任务可在后续调度中迁移核心；同一个入口函数也可以创建两个任务实例，各有自己的 TCB 和栈，但共享全局数据仍需同步。提高一个任务优先级不能阻止另一核上的任务或 ISR 同时运行。[FreeRTOS SMP 说明](https://docs.aws.amazon.com/freertos/latest/userguide/smp-support.html)
+
+```text
+同一个应用程序
+├─ CPU0：处理某个外设中断
+├─ CPU1：执行周期任务
+└─ 两者共同访问：队列、SPI 控制器、Flash 等
+```
+
+**API 名字不决定执行核心。** CPU0 的 ISR 调用 `xQueueSendFromISR()`，该次调用就在 CPU0 的中断上下文执行；CPU1 的任务调用 `xQueueSend()`，则在该任务当前运行的 CPU1 执行。`FromISR` 表示中断使用规则，不是“指定 CPU0”。ISR 的执行核由芯片连接、中断路由或安装配置决定，任务的执行核由亲和性／绑核配置和调度器决定；没有绑核时不能仅靠一行函数调用判断固定执行核。
+
+例如 ESP-IDF 通过 `xTaskCreatePinnedToCore()` 指定任务亲和性，外设中断的分配还与安装它的核心有关；这些是平台接口，不是所有 RTOS 的统一写法。机器狗项目的 M4 应用任务与 NWP 分工也不等于这里的两个对等应用核。[ESP-IDF 任务亲和性](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/freertos_idf.html#tasks)；[中断分配](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/intr_alloc.html)
+
+<a id="multicore-queue-case"></a>
+### 面试例一：CPU0 的 ISR 与 CPU1 的任务同时写同一个队列
+
+**题目还原：** CPU0 的中断服务函数和 CPU1 的周期任务都会向同一个 Queue 存放消息。如果同时执行，会出现什么情况，如何避免冲突？
+
+```text
+CPU0 ISR  ──消息 A──┐
+                   ├──→ 同一个共享队列
+CPU1 任务 ──消息 B──┘
+```
+
+**冲突原因：** 入队通常包括检查容量、写入消息、推进队尾、更新计数，是一组操作而不是天然不可分割的一条指令。周期任务也可能与 ISR 重叠，两个核同时写入属于多生产者并发。
+
+| 顺序 | CPU0 ISR | CPU1 任务 |
+| --- | --- | --- |
+| 1 | 读到队尾 `tail = 2`。 | 也读到 `tail = 2`。 |
+| 2 | 向 `buffer[2]` 写 A。 | 也向 `buffer[2]` 写 B。 |
+| 3 | 将队尾更新为 3。 | 也将队尾更新为 3。 |
+
+对于没有保护的自写队列，可能出现消息覆盖、计数丢失更新、索引与内容不一致；不能因为两边“都只是入队”就认为没有冲突。
+
+**使用正规 RTOS 队列：** 若内核／移植正确支持当前 SMP 平台，任务和 ISR 按其规则使用同一队列，内部同步由内核实现，一般不用在每次队列 API 外再套一把锁。FreeRTOS 中两种调用场景分别是：
+
+```text
+CPU0 ISR： xQueueSendFromISR(queue, &message, &higher_priority_task_woken)
+CPU1 任务：xQueueSend(queue, &message, 0)
+
+这是调用方式示意，不是指定核心的配置代码；实际都应检查返回值。
+```
+
+ISR 必须满足对应中断优先级等约束，队列满时不能阻塞等待；按返回值执行丢弃、计数、另存等策略，并按移植接口处理必要的调度请求。任务可以设置超时，也可以用 0 表示不等待。**`xQueueSend(..., 0)` 仍是任务接口，不能因为不等待就替代 ISR 接口。** 并发请求哪一个先成功入队，取决于同步和实际执行顺序，不能按“中断一定比任务先完成”判断。[FreeRTOS ISR 通信规则](https://github.com/FreeRTOS/FreeRTOS-Kernel-Book/blob/main/ch07.md)；[队列实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/queue.c)
+
+**如果自己实现队列：** 应使用支持多生产者的正确同步设计，例如用平台的 ISR 安全跨核自旋锁保护短入队过程，并处理本核中断重入／抢占与内存顺序；读队列的路径也要遵循相应协议。无锁队列也可以，但给 `tail` 加一次原子自增并不足以自动解决槽位发布和消息可见性问题。
+
+**面试回答：** “先确认队列实现。普通未保护队列可能因两核同时修改队尾和计数而丢消息；支持 SMP 的 RTOS 队列应由 ISR 使用 `FromISR` 接口、任务使用普通接口，让内核完成同步，并处理队列满。只关闭本核中断不够，自写队列需要跨核同步及中断安全的短临界区。”
+
+<a id="multicore-spi-flash-case"></a>
+### 面试例二：CPU0 的 ISR 与 CPU1 的任务共用 SPI 写 Flash
+
+**题目还原：** CPU0 的 ISR 需要通过 SPI 写 Flash，CPU1 的周期任务也会通过同一个 SPI 控制器写同一颗 Flash，怎样避免冲突？
+
+```text
+CPU0 ISR  ──写请求 A──┐
+                     ├──→ 同一个 SPI 控制器／总线 → 同一颗 Flash
+CPU1 任务 ──写请求 B──┘
+```
+
+**冲突原因：** 两边若直接配置控制器、切换 CS、写 FIFO 或启动 DMA，可能相互覆盖配置、混入数据或破坏片选边界。即使写不同 Flash 地址，仍共享同一个控制器和设备状态。SPI 全双工只表示一次通信可同时收发，不代表两个核能独立发起互不干扰的事务。
+
+Flash 还需要区分 **SPI 传输结束**与**内部编程／擦除结束**。以常见 SPI NOR 页编程为例：
+
+```text
+确认设备就绪 → 写使能 → 页编程命令 + 地址 + 数据
+                                      ↓
+                              SPI 发送结束、CS 释放
+                                      ↓
+                         Flash 内部编程，BUSY／WIP 仍可能为 1
+                                      ↓
+                         查询状态，确认完成／错误／超时
+```
+
+需要时还要按器件要求先擦除、分页面编程。因此不能只保护单条寄存器写入或单次 SPI 命令，必须管理设备的完整操作状态；驱动是否线程安全、是否允许 ISR 调用也要查具体契约。[SPI 驱动并发访问示例与限制](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/spi_master.html)；[SPI NOR 页编程与忙状态](https://onlinedocs.microchip.com/oxy/GUID-C89AD232-04D9-4C1A-A637-CC313A2EEB17-en-US-2/GUID-BCBA30A2-37FE-4169-BFF2-8A4280DC593F.html)
+
+**优先方案：ISR 延后处理，由 Flash 工作任务统一访问。**
+
+```text
+CPU0 ISR  ──中断安全接口提交请求──┐
+                                ├─→ 请求队列 → Flash 工作任务 → SPI／Flash
+CPU1 任务 ──任务接口提交请求──────┘
+```
+
+ISR 只保存必要信息并提交请求，尽快返回；周期任务也提交请求，工作任务逐条处理写使能、传输、忙状态和超时，再反馈成功／失败。所有访问这颗 Flash 的路径都必须遵守同一管理机制，不能另有代码绕过工作任务直接写；如果同一 SPI 总线上还连接其他设备，还要由驱动／总线管理层协调共享控制器。
+
+请求队列本身仍需满足上一题的 SMP 与 ISR 安全要求。队列满要有策略；若消息只传缓冲区指针，必须保证处理完成前数据有效且不被修改，可使用持久缓冲池及明确的所有权交接。入队成功只表示请求被接受，不代表 Flash 已经写完。
+
+**锁应该保护到哪里？**
+
+| 对象／场景 | 合适的管理方式 |
+| --- | --- |
+| 多个普通任务操作同一颗 Flash | 使用支持跨核的任务互斥机制，管理完整设备操作；遵守驱动契约。 |
+| 控制器占用标志、短小寄存器配置 | 必要时使用平台的 ISR 安全短临界区／自旋锁。 |
+| 等待 DMA 或 Flash 编程／擦除完成 | 放到任务或非阻塞状态机处理，不在 ISR 中持自旋锁长期等候。 |
+| Flash 忙时，其他 SPI 设备也需要总线 | 可以按驱动设计释放总线供其他设备使用，但仍保留该 Flash 的操作所有权／忙状态管理。设备锁与总线锁不能混为一谈。 |
+
+如果确实必须在 ISR 中启动操作，只能选择允许该上下文的非阻塞驱动路径：短临界区尝试取得控制权，忙时延后或记录失败，启动后由 DMA／完成事件和状态机继续处理。异步启动后即使已释放短自旋锁，设备仍须保持“已占用”状态，直到完成；不能立即让另一请求重配置控制器。普通 Mutex 不用于 ISR，长时间关中断或自旋等待 Flash 也不是合适方案。
+
+**面试回答：** “两个核共享 SPI 控制器和 Flash，会争用配置、片选和设备写入流程。我优先让 ISR 与周期任务提交请求，由专门任务统一写 Flash，处理忙状态和超时。仅关本核中断不够，普通 Mutex 也不能在 ISR 中阻塞等待；自旋锁只保护短状态更新，不能覆盖整个 Flash 编程／擦除等待。”
+
+<a id="multicore-interview-summary"></a>
+### 两道题的共同追问与选型
+
+| 追问 | 回答要点 |
+| --- | --- |
+| 只关中断或暂停调度可以吗？ | 只影响本核，不能阻止其他核并行访问共享资源。 |
+| 把 ISR／任务优先级调高可以吗？ | 优先级不是跨核互斥机制。 |
+| 加 `volatile` 可以吗？ | 不提供原子性、互斥或完整的跨核内存同步。 |
+| ISR 可以拿普通 Mutex 吗？ | 不用任务 Mutex 在 ISR 中睡眠等待，应采用中断安全接口或延后处理。 |
+| 自旋锁为什么还要处理本核中断？ | 持锁任务若被也要拿同一把锁的本核 ISR 打断，会发生相互等待；使用平台正确的锁及中断状态保存／恢复接口。 |
+| `FromISR` 是否代表固定 CPU0？ | 不是，它约束调用上下文；执行核由中断归属及任务亲和性／调度决定。 |
+| 为什么队列题与 Flash 题方案不完全相同？ | 入队内部更新通常短小，可由内核同步；Flash 是带设备状态和完成等待的较长操作，适合交给工作任务串行处理。 |
+
+**共同原则：** 先识别共享对象和执行上下文，再查已有 API 是否已保证同步；短小状态修改采用合适的跨核保护，耗时外设操作优先由任务处理。所有访问路径必须遵守同一协议，不要自行用“普通标志 + 忙等”代替正规同步。[Linux 自旋锁与本核中断重入说明](https://docs.kernel.org/locking/spinlocks.html)
 <!-- TOPIC:spinlocks:END -->
 
 <a id="scheduling-comparison"></a>
