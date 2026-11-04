@@ -56,6 +56,7 @@
 - [CPU 调度算法：FCFS、SJF、SRTF、优先级、RR、MLFQ](#cpu-scheduling-algorithms)
   - [指标与解题约定](#scheduling-metrics) · [FCFS](#scheduling-fcfs) · [SJF](#scheduling-sjf) · [SRTF](#scheduling-srtf) · [优先级调度](#scheduling-priority) · [RR](#scheduling-rr) · [MLFQ](#scheduling-mlfq)
 - [Linux 启动、进程与线程](#linux)
+  - [进程与线程的区别](#linux-process-thread-basics) · [线程间通信与同步](#linux-thread-communication) · [进程间通信 IPC](#linux-process-communication) · [结合机器狗项目回答](#linux-communication-project)
   - [嵌入式 Linux 启动主线](#linux-boot) · [进程与线程的状态](#linux-task-states) · [新线程的默认栈大小](#linux-thread-stack-size) · [创建进程](#linux-process-creation) · [创建线程](#linux-thread-creation) · [线程池与内存池](#linux-thread-pool) · [多线程与多进程](#threads-vs-processes)
 - [TCP 与 UDP：背景、可靠性与安全性](#tcp-udp)
   - [所在层次](#tcp-udp-background) · [TCP 的可靠传输](#tcp-reliability) · [UDP 的数据报](#udp-datagrams) · [区别与选型](#tcp-udp-comparison) · [粘包与拆包](#tcp-message-boundaries) · [可靠不等于安全](#tcp-udp-security) · [结合机器狗 MQTT](#tcp-udp-project)
@@ -3239,6 +3240,123 @@ P1 在 0–2 用满 Q1 的 2 单位，还剩 2；P2 在 2–4 用满 Q1，还剩
 
 <a id="linux"></a>
 ## Linux 启动、进程与线程
+
+<a id="linux-process-thread-basics"></a>
+### 进程与线程的区别
+<!-- TOPIC:linux-process-thread-basics:START -->
+
+**进程是一个运行中的程序实例，线程是其中的一条执行路线。** 例如，一个 Linux 采集显示程序可以在一个进程中创建三个线程，分别负责采集、显示和上传：
+
+```text
+一个 Linux 进程：拥有自己的虚拟地址空间和进程资源
+  ├─ 采集线程：读取传感器
+  ├─ 显示线程：更新界面
+  └─ 上传线程：发送数据到服务器
+       ↑ 共享全局数据、堆等，但各有自己的栈和执行现场
+```
+
+| 对比 | 不同进程之间 | 同一进程的线程之间 |
+| --- | --- | --- |
+| 地址空间 | 通常各有独立的虚拟地址空间，可显式建立共享映射 | 共享所属进程的地址空间 |
+| 全局变量与堆 | 默认独立；普通变量同名或地址数值相同，不代表是同一块数据 | 共享，因此交换数据方便，也容易发生竞争 |
+| 栈与执行现场 | 每个进程内的执行线程都需要自己的栈和现场 | 每个线程有自己的栈、PC、SP 等执行现场 |
+| 文件描述符 | 各进程有自己的描述符表，但可继承指向同一底层打开文件的描述符 | 通常共享进程的文件描述符表 |
+| 隔离与故障影响 | 地址空间隔离通常能限制内存错误的直接扩散 | 线程写坏共享内存，可能导致整个进程崩溃 |
+
+常见面试表述是：**进程是资源组织和隔离的基本单位，线程是 CPU 调度和执行的基本单位。** 在 Linux 中，内核实际调度的是线程这样的执行实体。单核上多个线程交替执行，多核上可以真正并行；不是“进程能并行、线程只能轮流运行”。
+
+**各有自己的栈，不等于栈受到线程之间的内存隔离保护。** 同一地址空间中的其他线程拿到有效指针，也可能访问这片栈内存；仍需保证对象生命周期和访问同步。`fork()` 的写时复制与线程创建方式见[创建进程](#linux-process-creation)和[创建线程](#linux-thread-creation)，业务如何选择见[多线程与多进程](#threads-vs-processes)。
+
+参考：[Linux `pthreads(7)`：共享资源与线程私有属性](https://man7.org/linux/man-pages/man7/pthreads.7.html)。
+<!-- TOPIC:linux-process-thread-basics:END -->
+
+<a id="linux-thread-communication"></a>
+### 线程之间怎样通信，为什么还要同步？
+<!-- TOPIC:linux-thread-communication:START -->
+
+同一进程的线程共享内存，最直接的通信方式是一个线程写共享变量或缓冲区，另一个读取。但要分清两个问题：**数据放在哪里，以及谁在什么时候可以访问它。**
+
+| 方式 | 主要作用 | 例子 |
+| --- | --- | --- |
+| 共享数据＋互斥锁 | 保护共同访问的数据，避免冲突访问 | 采集线程更新温度结构体，显示线程读取快照 |
+| 共享数据＋条件变量 | 条件不满足时睡眠等待，条件变化后重新检查 | 消费者在队列为空时等待，生产者放入数据后通知 |
+| 信号量 | 事件通知或资源计数 | 表示有多少块数据可供处理，或还有多少空闲缓冲块 |
+| 原子操作 | 为合适的简单状态、计数提供原子访问及所需内存顺序 | 原子递增统计计数器；不能据此把整个复合结构体当作已同步 |
+| 应用实现或库提供的线程安全队列 | 按消息传递具体数据 | 采集线程把每条记录交给日志线程 |
+| 管道、Socket 等 | 通过收发接口传递数据 | 同样可以用于线程之间，不只限于进程通信 |
+
+**温度显示例子：** 如果只关心最新值，可以共享一个温度变量，用同一把锁保护写入和读取；读取后复制到局部变量，释放锁，再执行耗时显示。下面是流程伪代码：
+
+```text
+采集线程：                     显示线程：
+  获取互斥锁                     获取同一把互斥锁
+  更新共享温度                   将共享温度复制到局部变量
+  释放互斥锁                     释放互斥锁
+                                 使用局部副本更新显示
+```
+
+如果必须保存每一次采样，就把记录逐条放入线程安全队列；如果显示线程需要“有新数据才醒来”，可用条件变量等机制等待。条件变量的等待要结合互斥锁，并在循环中检查条件，不能把一次唤醒直接当成条件必定满足。
+
+**互斥锁本身不装业务数据，信号量通常也不装业务数据。** 数据仍在共享内存或队列中，它们负责互斥、通知或计数。普通数组／链表队列不会自动线程安全，需要正确实现同步；FreeRTOS 的内核队列则已经提供等待、唤醒及内部并发保护，不能把两者混为一谈。`volatile` 不能代替锁、原子操作或内存同步，见[相关章节](#volatile)。
+
+参考：[Linux `pthread_mutex_lock(3)`](https://man7.org/linux/man-pages/man3/pthread_mutex_lock.3.html)、[`pthread_cond_wait(3)`](https://man7.org/linux/man-pages/man3/pthread_cond_wait.3.html)、[`sem_overview(7)`](https://man7.org/linux/man-pages/man7/sem_overview.7.html)。
+<!-- TOPIC:linux-thread-communication:END -->
+
+<a id="linux-process-communication"></a>
+### 进程间通信：IPC 有哪些方式？
+<!-- TOPIC:linux-process-communication:START -->
+
+不同进程默认不共享普通全局变量。例如采集进程和显示进程都定义 `int temperature`，一个进程赋值，不会自动更新另一个进程的变量。它们通常需要使用 **IPC（Inter-Process Communication，进程间通信）**：
+
+| 方式 | 通俗理解与特点 | 典型用途 |
+| --- | --- | --- |
+| 匿名管道 Pipe | 一端写、一端读的单向字节流；常见于父子进程，无业务消息边界 | 父子进程传递数据、Shell 命令管道 |
+| 有名管道 FIFO | 有文件系统路径的管道，允许有权限的进程打开 | 无亲缘关系的本机进程交换数据 |
+| 消息队列 | 由内核管理的一条条消息，具体规则取决于 POSIX 或 System V 接口 | 传递命令、状态和结构化消息 |
+| 共享内存 | 多个进程映射同一片内存，读写共享内容 | 大块或高频数据交换 |
+| 信号 Signal | 通知某个事件发生，主要用于控制；不适合承载大量业务数据 | 终止、暂停、恢复等控制 |
+| 信号量等进程共享同步对象 | 协调访问顺序、可用资源数量；通常要配合共享数据使用 | 保护共享内存、通知数据就绪 |
+| Socket | 双方通过接口收发；Unix Domain Socket 用于本机，TCP／UDP Socket 可跨机器 | 服务之间通信、客户端与服务端交互 |
+
+管道与 FIFO 的数据通道是字节流，读取次数不必与写入次数一一对应，业务仍需约定消息边界；需要双向通信时可以使用两条管道或适合的 Socket。Unix Domain Socket 不必经过 IP 网络，也不能把它的所有类型都当成 TCP 字节流。[Linux 管道说明](https://man7.org/linux/man-pages/man7/pipe.7.html)、[Unix Domain Socket 说明](https://man7.org/linux/man-pages/man7/unix.7.html)
+
+**共享内存例子：**
+
+```text
+采集进程的地址空间                 显示进程的地址空间
+  映射地址 A ──────┐           ┌────── 映射地址 B
+                   ↓           ↓
+                   同一片共享内存
+                   temperature = 26
+```
+
+两个映射地址的数值不必相同，但背后对应同一片共享内容。POSIX 常见流程是 `shm_open()` 打开共享内存对象、`ftruncate()` 设置大小，再 `mmap()` 映射；读取方映射同一个对象即可访问。[Linux POSIX 共享内存说明](https://man7.org/linux/man-pages/man7/shm_overview.7.html)
+
+**共享内存只解决“共同访问哪里”，不会自动完成同步。** 还需合适的进程共享信号量、互斥锁或原子协议，避免读取到更新一半的数据。普通线程私有互斥锁不能直接拿来跨进程使用；以 POSIX 互斥锁为例，需要放在共享内存中，并按平台支持设置 `PTHREAD_PROCESS_SHARED` 属性。共享内存中也不宜直接传递某个进程的普通指针，通常使用相对偏移或双方约定的索引。[进程共享互斥锁属性说明](https://man7.org/linux/man-pages/man3/pthread_mutexattr_getpshared.3.html)
+
+选择时可先问：只要事件通知，还是要传数据？消息有多大？是否跨机器？对吞吐、隔离和实现复杂度有什么要求？不要仅凭“共享内存快”就认为所有 IPC 都应该改成共享内存。
+<!-- TOPIC:linux-process-communication:END -->
+
+<a id="linux-communication-project"></a>
+### 面试中怎样结合机器狗项目讲通信？
+<!-- TOPIC:linux-communication-project:START -->
+
+**项目使用的是 FreeRTOS 任务，不能说成使用了 Linux 多进程。** 它们可以类比为共享地址空间中的多条执行路线，但运行环境和 API 不同。
+
+根据此前核对的 `wifi_http_otaf_soc_4_28` 源码，应用层主要是“共享状态／缓冲区＋回调置位＋延时轮询”。例如 I2S 接收完成回调记录完成块并设置就绪标志，采集任务检查后启动后续接收、处理完成的数据：
+
+```text
+I2S 接收完成 → 回调记录完成缓冲区并置位
+                              ↓
+                  采集任务轮询到就绪标志
+                              ↓
+                  交替接收并处理音频数据
+```
+
+这属于已有的实际实现，不能直接包装成“已经用队列／信号量实现全部任务交接”。若问改进，可以说明：用任务通知或信号量替代部分轮询，让任务等待事件；需要保留每条消息时使用队列；共享音频缓冲区则明确生产者、消费者及所有权交接，避免未处理完就被覆盖。**通知不等于复制数据，改了唤醒方式仍需保证缓冲区生命周期和同步。** 详见[机器狗实际通信流程与改进分析](experiences/project-voice-robot-dog/README.md#task-communication)。
+
+**面试简答：** “进程通常有独立地址空间，线程共享所属进程的资源，但各有自己的栈和执行现场。线程间可通过共享数据配合锁、条件变量、信号量或线程安全队列协作；进程间常用管道、消息队列、共享内存、信号和 Socket。我的机器狗使用 FreeRTOS 任务，所核对版本主要采用共享缓冲区、回调置位和任务轮询，通知与队列是需要按场景引入的改进方案。”
+<!-- TOPIC:linux-communication-project:END -->
 
 <a id="linux-boot"></a>
 ### 嵌入式 Linux 启动主线
