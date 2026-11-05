@@ -33,7 +33,9 @@
 - [CRC 校验](#crc)
   - [CRC8、CRC16、CRC32 的区别](#crc-width) · [一次校验怎么完成](#crc-process) · [CRC-4 手算过程](#crc-hand-calculation) · [外设如何配合](#crc-device) · [C 语言 CRC8 示例](#crc-example)
 - [Bootloader 与 OTA 升级](#bootloader-ota)
-  - [两者的分工](#bootloader-ota-basics) · [升级时旧应用怎么办](#bootloader-ota-running-app) · [双分区升级流程](#bootloader-ota-flow) · [确认后的主动回滚](#bootloader-ota-manual-rollback) · [单应用分区升级](#bootloader-ota-single-slot) · [断电与恢复](#bootloader-ota-recovery) · [面试常见问题](#bootloader-ota-questions)
+  - [通用分工](#bootloader-ota-basics) · [升级时旧应用怎么办](#bootloader-ota-running-app) · [单应用分区](#bootloader-ota-single-slot) · [断电与恢复](#bootloader-ota-recovery) · [A/B 升级流程](#bootloader-ota-flow) · [确认后的主动回滚](#bootloader-ota-manual-rollback)
+  - [机器狗：双处理器与 ROM Bootloader](#bootloader-siwg917) · [NWP 固件与 RPS](#bootloader-siwg917-rps) · [链接地址与容量](#bootloader-siwg917-addresses) · [镜像与安全检查](#bootloader-siwg917-checks) · [向量表、VTOR 与启动交接](#bootloader-vtor-handoff)
+  - [当前 OTA 路径](#bootloader-siwg917-ota) · [暂存与安装](#bootloader-siwg917-staging) · [Flash 擦写与 RAM 执行](#bootloader-siwg917-ram) · [未来 Fallback 方案](#bootloader-siwg917-fallback) · [Updater 职责](#bootloader-siwg917-updater) · [A/B 向量表与链接](#bootloader-ab-vectors) · [看门狗与试运行回退](#bootloader-watchdog-rollback) · [面试常见问题](#bootloader-ota-questions)
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
@@ -1480,12 +1482,120 @@ uint8_t crc8_msb(const uint8_t *data, size_t len,
 ## Bootloader 与 OTA 升级
 <!-- TOPIC:bootloader-ota:START -->
 
+阅读顺序：先看通用分工，再看机器狗的实际启动与 OTA 路径，最后看尚未实现的 A/B 和看门狗回退方案。已有通用知识保留在本章，具体芯片行为以工程代码和对应版本手册为准。
+
 <a id="bootloader-ota-basics"></a>
 ### Bootloader 和 OTA 各负责什么？
 
 **Bootloader** 是应用程序运行前的引导程序，负责按设备的启动设计检查固件、选择要运行的镜像，并把控制权交给应用。部分 MCU 自带用于下载或恢复的 ROM Bootloader；产品也可在 Flash 中放自己的 Bootloader，二者的位置和功能不能混为一谈。对于 Cortex-M 自定义引导程序，跳转应用时还要处理应用的初始栈指针、复位入口、中断向量表及先前外设/中断状态；细节以具体芯片和工程布局为准。[ST 双 Bank 升级应用笔记](https://www.st.com/resource/en/application_note/an4767-onthefly-firmware-update-for-dual-bank-stm32-microcontrollers-stmicroelectronics.pdf)
 
 **OTA（Over-the-Air）** 指通过无线或网络通道获取新固件并升级的方式。在双分区等方案中，通常是正在运行的应用负责下载、分块写入和请求升级；Bootloader 在重启时检查升级状态、选择或搬运镜像，再启动应用。单应用分区也可让 Bootloader 承担接收和擦写工作。串口或 USB 升级能复用类似的 Bootloader 与分区设计，但传输方式本身不叫 OTA。
+
+<a id="bootloader-siwg917"></a>
+### 机器狗项目：两个处理器、两个 ROM Bootloader
+
+下面对应语音交互机器狗的 **SiWG917** 和保存的 `wifi_http_otaf_soc_4_28` 工程。芯片选型见[项目文档](experiences/project-voice-robot-dog/README.md#chip-selection)。通用的“Flash 前面放自定义 Bootloader、后面放 A/B”的图只是某类实现，不能直接当作这颗芯片的真实布局。
+
+| 部分 | 运行位置与作用 | 项目中如何理解 |
+| --- | --- | --- |
+| NWP（Network Wireless Processor） | 无线、网络及安全处理域 | 运行厂商的 NWP 无线固件，M4 通过 SDK 与它交互。 |
+| Cortex-M4 | 应用与外设处理器 | 运行自己的 C 程序、FreeRTOS 任务、录音、舵机、OLED、MQTT 等。 |
+| Security Bootloader | NWP 的 ROM | 复位启动链的前段，按配置负责安全检查、ISP 和固件升级，并使能 Application Bootloader。 |
+| Application Bootloader | M4 的 ROM | 按平台启动信息加载、执行 M4 应用，并处理相应唤醒流程。 |
+
+这是两个处理器分工的 SoC，不能理解为九个 FreeRTOS 任务在两个对称 CPU 核之间自由调度。两个 Bootloader 配合完成启动与升级，也不是简单地“一个只升级 NWP，另一个只升级 M4”。[SiWx91x 软件参考手册：启动流程](https://github.com/SiliconLabs/wiseconnect/blob/v3.5.2/docs/software-reference/manuals/siwx91x-software-reference-manual.md#bootup-flow)
+
+```text
+复位 → NWP ROM Security Bootloader
+       按设备策略检查镜像、处理待安装更新、使能 M4 启动
+                         ↓
+              M4 ROM Application Bootloader
+              按启动信息加载并交接给 M4 应用
+                         ↓
+              startup_si91x.c → main()
+                         ↓
+              FreeRTOS 与机器狗业务任务
+```
+
+Bootloader 最终也是处理器执行的机器指令，通常可由 C/汇编生成。但该芯片的 ROM Bootloader 已由厂商提供，现有公开资料和本地工程并未给出其完整实现源码；SDK 中发命令、请求升级的代码不等于 ROM 内部源码。
+
+<a id="bootloader-siwg917-rps"></a>
+#### 最开始烧录的 `.rps` 是什么？
+
+提供的 `SiWG917-B.2.14.5.2.0.7.rps` 是 **NWP 无线固件镜像**，不是自己编写的 Bootloader，也不是机器狗的 M4 业务代码。它是编译、打包后的二进制文件，不能直接当作 C 源码阅读。烧录它让 NWP 具有对应版本的无线与网络能力；连接哪个 Wi-Fi 还由应用中的网络配置决定。
+
+本地读取该文件得到：总长 `1,668,448` 字节，镜像魔数 `0x900D900D`，控制标志 `0x0000`。按 RPS 标志定义，它表示 NWP 镜像、CRC 方式、未标记加密和数字签名、非组合镜像。这里只完成了文件头解析，**没有独立重算整份镜像的 CRC，也没有读取实板的安全配置**；不能由此推断设备所有安全机制都关闭。[RPS 镜像格式与控制标志](https://docs.silabs.com/wiseconnect/latest/wifi-siwx917-soc-secure-boot-with-anti-rollback-protection/rps-format)
+
+业务变化时通常重新构建 M4 应用即可；前提是已烧录的 NWP 固件仍在、且与所用 SDK 兼容。升级 SDK 或整片擦除后，仍需核对 NWP 固件。`.rps` 是镜像容器格式，也能承载 M4 或组合镜像，不能仅凭扩展名判断内容。
+
+<a id="bootloader-siwg917-addresses"></a>
+#### 链接地址、镜像头和实际容量怎样看？
+
+工程的 `autogen/linkerfile_SoC.ld` 写着：
+
+```ld
+rom (rx) : ORIGIN = 0x08202000, LENGTH = 0x1FE000
+```
+
+| 项目 | 含义 |
+| --- | --- |
+| `rom` | 链接脚本里的区域名称；这里对应应用的 Flash 执行区域，不是芯片的物理 Boot ROM。 |
+| `ORIGIN` | 该链接区域的起点；工程把 `.isr_vector` 保留在此区域开头。 |
+| `LENGTH` | 单位是字节。`0x1FE000 = 2,088,960` 字节，即 `2040 KiB`；它是允许放置内容的区域容量，不是已编译固件的实际大小。 |
+| 地址范围 | `0x08202000`～`0x083FFFFF`，末地址包含在内。 |
+| 官方常规布局 | M4 镜像头起点 `0x08201000`，应用执行/向量表起点 `0x08202000`；镜像头和向量表不是同一个东西。 |
+
+`0x08000000` 是常见 STM32 的 Flash 映射起点，不能跨芯片套用。不能把 `0x08000000`～`0x08201FFF` 全算作本项目的 Bootloader：平台还有 NWP、配置及保留区域，而上述两个 Bootloader 本身在 ROM。8 MB Flash 减去应用区域，也不等于剩余空间全部可任意使用。[SiWG917 Flash 内存说明](https://docs.silabs.com/wiseconnect/3.5.2/wifi-siwx917-soc-memory-map/flash-memory) · [标准布局与 M4 镜像头位置](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/flash-map-updates)
+
+<a id="bootloader-siwg917-checks"></a>
+### 固件在安装、启动前要做哪些检查？
+
+先解析镜像格式、类型、长度和加载信息，再按设备配置与镜像格式完成对应验证。并不是每次更新都无条件执行下面所有算法。
+
+| 检查 | 解决的问题 | 不能混淆的地方 |
+| --- | --- | --- |
+| 格式与边界 | 文件是否为可识别的镜像，目标是 NWP 还是 M4，长度/目标范围是否合法 | 合法镜像也不能写出分区边界，不能把 RPS 文件整体原样写到向量表地址。 |
+| CRC | 发现传输或存储造成的意外数据损坏 | 攻击者能重新计算 CRC，它不能证明发布者身份。 |
+| MIC，例如 AES-CMAC | 使用密钥验证完整性与真实性 | 需要正确的密钥与设备配置。 |
+| 数字签名，例如 ECDSA | 使用可信公钥验证镜像来源及完整性 | 与普通 CRC 是不同层面的保护。 |
+| 加密，例如 AES-CTR/XTS | 保护固件内容的机密性 | 加密本身不替代真实性验证。 |
+| 安全版本/防降级策略 | 拒绝安全策略不允许的旧镜像 | 本地有旧版本，也可能因安全版本限制而不能回退。 |
+
+SiWG917 依据 RPS 控制标志和设备 MBR/安全配置决定验证路径；镜像不能通过自行改低标志绕过已强制启用的安全要求。该平台支持 CRC、MIC、签名及相应组合；是否启用须以烧录配置和设备状态为准。[安全固件更新模式](https://docs.silabs.com/wiseconnect/3.5.2/wifi-siwx917-soc-firmware-update-application-note/secure-firmware) · [安全启动与防降级](https://docs.silabs.com/wiseconnect/latest/wifi-siwx917-soc-secure-boot-with-anti-rollback-protection/secure-boot-process)
+
+**结合本项目可说：**“我检查过这份 NWP 文件的头部，它选择 CRC 完整性检查，未标记加密或签名。设备具备更完整的安全能力，但我没有实读实板安全配置，所以不能把芯片支持的功能都说成项目已启用。”
+
+<a id="bootloader-vtor-handoff"></a>
+### 从镜像进入 `main()`：向量表、MSP、复位入口与 VTOR
+
+Cortex-M 应用向量表若位于地址 `B`，前两项的关系如下。这里的 `B` 是向量表基址，不是 RPS 文件头地址。
+
+```text
+B + 0：保存“初始 MSP 的数值”       → 初始栈顶
+B + 4：保存“复位处理函数的地址”   → 从该地址取指执行
+B + 8 及后续：NMI、HardFault、其他异常与外设中断的入口
+```
+
+“向量表第 0 项”指偏移为 0，不是空指针；“第 1 项”里的复位入口地址也不是第一条指令本身。应用启动栈由链接脚本的 `__StackTop` 等符号确定，不等于后面各个 FreeRTOS 任务的独立栈。通用上电流程见[MCU 上电到 main](#mcu-boot)。
+
+**VTOR（Vector Table Offset Register）** 是 Cortex-M 系统控制块 SCB 中的向量表偏移寄存器，用于指定异常/中断向量表基址，CMSIS 写法是 `SCB->VTOR`。它能指向合规对齐的 Flash 或 RAM 向量表。**只改 VTOR 不会自动修改 MSP，也不会跳转到新程序**；应用交接还要准备栈、入口及中断状态。[CMSIS 启动文件与向量表](https://arm-software.github.io/CMSIS_6/latest/Core/startup_c_pg.html)
+
+本地 `startup_si91x.c` 的实际顺序可简化为：
+
+```c
+/* 据工程启动文件摘出的流程，省略条件编译和具体实现。 */
+void RSI_Default_Reset_Handler(void)
+{
+    Copy_Table();    /* 把需在 RAM 中运行/使用的初始内容从 Flash 搬入 RAM */
+    Zero_Table();    /* 清零 .bss */
+    /* 配置启用时：复制向量表到 ram_vector，并设置 SCB->VTOR。 */
+    SystemInit();
+    /* 工程启用 C++ 支持时，再调用 __libc_init_array()。 */
+    main();
+}
+```
+
+该文件的向量表前两项是 `&__StackTop` 和 `RSI_Default_Reset_Handler`。这说明“谁搬变量、谁清零”由启动代码负责；也说明不同 SDK 的 `SystemInit()` 与内存初始化顺序可能不同，应看自己的启动文件。ROM Bootloader 如何解析加载描述符并交接，是平台实现；不能把“硬件复位取向量”的过程原封不动套成任意软件跳转的过程。
 
 <a id="bootloader-ota-running-app"></a>
 ### 升级时，正在运行的应用怎么办？
@@ -1497,6 +1607,110 @@ uint8_t crc8_msb(const uint8_t *data, size_t len,
                                                        ↓
                                            Bootloader 选择并启动应用
 ```
+
+<a id="bootloader-ota-single-slot"></a>
+### Flash 只够放一个应用版本怎么办？
+
+若内部 Flash 只有一个应用分区，而且没有外部存储等位置保存旧镜像，就不能照搬完整的 A/B 方案。常见做法是保留**独立且受保护的 Bootloader**：旧应用收到升级请求后进入安全状态并重启；Bootloader 从网络或其他升级接口取得新镜像，擦写唯一的应用分区，写完后校验并启动。若候选镜像先暂存于外部 Flash，也可以先完整验证，再由 Bootloader 搬运到应用区。不能默认让正在从应用 Flash 执行的代码直接擦掉自身后继续运行；芯片能否边读边写、能否从 RAM 执行更新代码，都依具体硬件而定。
+
+```text
+内部 Flash：│受保护的 Bootloader│唯一的应用分区│
+旧应用请求升级 → 重启进入 Bootloader → 接收／取得新固件
+                                      → 擦写应用区 → 校验 → 启动新应用
+```
+
+**回滚与恢复要分清：** 如果旧镜像已被覆盖，设备本地没有完整旧版本，就无法像 A/B 那样直接切回旧固件；即使新固件校验通过，也可能在运行后暴露业务故障。升级中断或新应用无法启动时，只要 Bootloader 和恢复入口仍可用，就能再次通过网络、串口或 USB 写入可用固件，这是**重新刷入恢复**，不是本地自动回滚。若连 Bootloader 都损坏且没有 ROM 恢复途径，设备可能需要线下重新烧录。外部存储、额外暂存空间或精心设计的差分升级可以提供其他选择，但必须单独设计断电保护与镜像验证。
+
+<a id="bootloader-siwg917-ota"></a>
+### 机器狗当前 OTA：先确认更新对象，再理解暂存与安装
+
+#### 这版代码实际选择了什么？
+
+`app.c` 的配置是：
+
+```c
+#define M4_FW_UPDATE  0
+#define TA_FW_UPDATE  1
+#define FW_UPDATE_TYPE TA_FW_UPDATE
+```
+
+这里 `TA_FW_UPDATE` 对应 NWP 固件更新。**保存的这版代码选择的是 NWP 更新，不是 M4 应用更新**；过去演示是否用过 M4 更新分支，还需当时的构建配置和镜像证明，不能只凭项目有 OTA 功能就断言更新过哪一个。
+
+代码中的请求与处理主线如下，省略错误处理：
+
+```text
+MQTT 收到 OTA 命令 → 设置 ota_update_requested
+ → app 状态机进入固件更新状态
+ → sl_si91x_http_otaf_v2(&http_params) 请求平台下载
+ → 下载完成后的处理
+      ├─ TA/NWP 分支：sl_net_deinit() → sl_net_init() → 查询固件版本
+      └─ M4 分支：sl_si91x_soc_nvic_reset() → 进入重启安装/启动流程
+```
+
+应用调用的是 SDK 升级接口，不是在业务代码里直接对 `0x08202000` 写数据。NWP 更新的目标也不是 M4 的应用执行地址。[AN1431 的 NWP/M4 更新机制及触发方式](https://docs.silabs.com/wiseconnect/3.5.2/wifi-siwx917-soc-firmware-update-application-note/update-mechanisms)
+
+<a id="bootloader-siwg917-staging"></a>
+#### 没有 A/B，为什么还会有暂存区？
+
+厂商常规流程先把新 RPS 放入 Flash 中的平台暂存区（文档称 backup/download location），完成验证后再进入安装流程，把镜像内容安装到对应执行/目标位置。M4 的常规应用执行地址仍为 `0x08202000`；安装过程还涉及镜像头与加载描述符，不能理解成把整个 RPS 文件逐字节覆盖到这个地址。
+
+```text
+下载阶段：旧应用/固件仍在目标区；新 RPS 写入平台暂存区
+                         ↓
+               验证，通过后触发安装
+                         ↓
+安装阶段：Bootloader 将新镜像安装到相应目标区
+                         ↓
+启动阶段：加载并运行更新后的固件
+```
+
+**暂存区装的是“准备安装的新固件”，不是“保存供回退的旧固件”。** 一份可运行应用加一份临时升级包，不等于可以自由选择两份应用启动的 A/B 方案。暂存起点由平台安排，不能自己挑一个看似空闲的 Flash 地址代替。[厂商暂存、安装流程与位置限制](https://docs.silabs.com/wiseconnect/latest/wifi-siwx917-soc-firmware-update-application-note/load-and-update)
+
+**安装完，暂存内容去哪儿了？** 复制本身不会自动擦除源数据；但本次核对的资料没有明确说明当前 SDK 在安装成功后何时擦除或复用暂存区。即使还留有物理字节，也不代表升级状态仍有效，更不能把它当作永久数据区或旧版本回滚备份。应交由平台管理。
+
+<a id="bootloader-siwg917-ram"></a>
+#### 一边运行，一边擦 Flash，为什么没有把自己擦掉？
+
+先区分“下载到暂存区”与“安装到应用区”。不同地址并不自动保证可以边读边写：同一颗 Flash 在擦写期间可能暂停读访问，正在执行的指令、常量和中断入口都要考虑。
+
+这版工程有具体的配合代码：
+
+| 工程位置 | 能确认的行为 |
+| --- | --- |
+| `autogen/linkerfile_SoC.ld` | 把 `rsi_hal_mcu_m4_ram.o` 等部分代码放到运行地址为 RAM、加载地址为 Flash 的区域，即 `> ram AT> rom`，启动时复制。 |
+| `rsi_hal_mcu_m4_rom.c` | 收到 NWP 写公共 Flash 的通知后，调用 `sli_mv_m4_app_from_flash_to_ram(TA_WRITES_ON_COMM_FLASH)`。 |
+| `rsi_hal_mcu_m4_ram.c` | 相关函数屏蔽可配置中断，与 NWP 做握手并等待完成，再恢复中断。 |
+| `.slcp` | 包含 RAM 执行相关依赖及 `SLI_SI91X_MCU_FW_UPGRADE_OTA_DUAL_FLASH` 宏；宏名本身不能证明做了 A/B，也不能代替实板 Flash 模式确认。 |
+
+下面是该握手分支的**概念伪代码**，不是可直接替换 SDK 的实现：
+
+```c
+/* 此路径及必需依赖预先放在 RAM 中。 */
+mask_configurable_interrupts();
+notify_nwp_m4_is_ready_for_flash_write();
+while (nwp_flash_operation_pending()) {
+    /* 在安全的 RAM 路径等待，不继续从受影响的 Flash 取指。 */
+}
+restore_interrupt_state();
+```
+
+函数名虽然带 “move app from flash to RAM”，但其函数体不是临时 `memcpy()` 整个业务程序；关键代码的 RAM 放置由链接与启动阶段配合完成。OTA 期间可能暂停业务、拉长延迟，不能承诺原有音频与其他任务照常满足所有时限。
+
+<a id="bootloader-ota-recovery"></a>
+### 断电、空间不足与恢复
+
+| 故障点 | 设计时要保证什么？ |
+| --- | --- |
+| 下载或写入 B 中途断电 | A 仍完整可启动；B 没有通过校验前不可选为正式应用。 |
+| 更新“启动哪个版本”的状态时断电 | 状态写入要可恢复，例如冗余记录、序号和校验；重启后应能选出明确的有效版本。ESP-IDF 的 OTA 状态区使用两个可独立擦写的扇区处理这一问题。[ESP-IDF OTA 状态区](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/ota.html) |
+| 新版本能启动但运行不稳定 | 试运行期间不立即确认；故障后按回滚规则重新启动旧版本。 |
+| Flash 只够放一份应用 | 无法照搬完整 A/B 双镜像回滚；需按容量设计暂存空间和恢复入口，具体见[单应用分区升级](#bootloader-ota-single-slot)。 |
+
+Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路径或其他保护，应用分区再完整也可能无法启动。对带签名和防降级要求的产品，回滚旧固件还需与版本安全策略协调。
+
+**结合 SiWG917：** 最新 AN1431 说明平台使用暂存镜像支持升级掉电恢复，并在后续上电继续完成升级。保存的工程使用 WiSeConnect 3.5.2；这次只核对了代码与资料，没有做实板断电测试，所以该文档能力不能当作本项目已验证的结果。实际需覆盖下载中、下载完成后、目标区安装中及状态更新时掉电，观察恢复结果。[厂商对暂存与掉电恢复的说明](https://docs.silabs.com/wiseconnect/latest/wifi-siwx917-soc-firmware-update-application-note/load-and-update)
+
+这能回答“安装被打断后如何完成”，不能代替“新固件 CRC 正确但业务有 Bug 时如何退回旧版”。后者需要保留旧镜像和相应回退策略。
 
 <a id="bootloader-ota-flow"></a>
 ### 双分区升级：从下载到确认
@@ -1520,6 +1734,136 @@ Flash：│ Bootloader │ 应用 A：当前可用 │ 应用 B：下载候选 �
 
 例如显示设备从 A 版升级到 B 版，B 虽能进入 `main()`，但显示任务一直报错。只检查“程序启动了”就确认升级，会让故障固化；把显示初始化、关键配置读取和必要的通信自检纳入确认条件，才有机会在下一次重启时回到 A。
 
+<a id="bootloader-siwg917-fallback"></a>
+### 未来优化：采用 SiWG917 官方 Firmware Fallback A/B 方案
+
+**以下是设计方案，当前机器狗未实现 A/B、试运行确认或看门狗自动回滚。** 官方 Firmware Fallback 从 WiSeConnect 3.5.2 引入，支持指定的 8 MB 封装内 Flash OPN；实施前还要确认实际芯片型号、Common Flash 模式及 MBR 配置。不能仅凭“有 8 MB”或工程中的 `DUAL_FLASH` 宏就判定全部条件满足。[UG625 支持范围](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/)
+
+这不是在旧链接区域后面随手再划一个 B。官方方案重新安排 Flash，包含两份 NWP、两份 M4、M4 Updater 及槽位信息；ROM 中两个 Bootloader 继续保留。[Fallback Flash 布局](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/flash-map-updates)
+
+```text
+原有常规布局：ROM 启动链 → 0x08202000 的机器狗 M4 应用
+
+未来 Fallback：ROM 启动链 → M4 Updater
+                               ├─ 根据有效槽位信息选择 M4 A
+                               └─ 或选择 M4 B
+                     NWP 镜像也按官方方案配置与配套选择
+```
+
+官方 4.0.1 参考例子的**执行起点**如下，仅帮助理解，不能直接作为本项目最终分区表：
+
+| 示例程序 | 示例执行起点 |
+| --- | --- |
+| M4 Updater | `0x08202000` |
+| M4 Slot A | `0x0827F000` |
+| M4 Slot B | `0x0842F000` |
+
+Updater 占据原来默认应用入口，业务镜像需要重新链接到自己的槽位。实际容量、擦除边界、RPS 头空间、NWP 区域、NVM 与元数据必须一起计算，并采用匹配版本的官方示例配置。[生成不同槽位的固件](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/firmware-fallback-setup-slot-management)
+
+**下载通道也要调整：** 厂商说明常规 HTTP/S OTAF 机制不适用于已启用 Fallback 的设备；不能原封不动保留当前 `sl_si91x_http_otaf_v2()` 就认为获得 A/B。仍可由 M4 通过 HTTP/S GET 获取分块，再走槽位擦写、验证与提交流程。NWP 与 M4 应使用匹配的 SDK 版本。[Fallback 使用约束](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/recommended-practices-troubleshooting)
+
+<a id="bootloader-siwg917-updater"></a>
+#### Updater 具体做什么，应用具体做什么？
+
+**应用负责准备新镜像，Updater 负责启动时选镜像并交接。** 官方参考 Updater 读取槽位信息、选择应用；安全版还处理相应安全流程。它跳入应用后，不是继续在后台运行的 FreeRTOS 监控任务。[官方 Updater 与槽位示例](https://docs.silabs.com/wiseconnect/4.0.1/wifi-siwg917-firmware-fallback/firmware-fallback-example-suite)
+
+| 阶段 | 官方 API 入口示例 |
+| --- | --- |
+| 解析新 RPS，查询当前/非活动槽位 | `sl_si91x_ab_upgrade_get_rps_configs()`、`sl_si91x_ab_get_slot_info()` |
+| 擦除非活动槽位，分块写入 | `sl_si91x_flash_erase()`、`sl_si91x_flash_write()` |
+| 完成后验证候选镜像 | `sl_si91x_verify_image()`；核对所需的镜像头地址，不混用向量表地址。 |
+| 验证成功后提交新槽位信息 | `sl_si91x_ab_upgrade_set_slot_info()`，再按流程复位。 |
+| Updater 启动时获取应用位置并交接 | `sl_si91x_get_m4_app_addr()`、`sl_si91x_jump_to_m4_application()` |
+
+`sl_si91x_get_m4_app_addr()` 对槽位元数据的 Magic/CRC 检查、必要时使用备份元数据，不等于“新应用业务失败就自动切到旧应用”。`sl_si91x_toggle_slot_info()` 用于符合条件的手动/恢复切换，不能在常规升级中每次盲目调用；切换后需复位，且目标镜像必须有效。[WiSeConnect 3.5.2 Fallback API](https://docs.silabs.com/wiseconnect/3.5.2/wiseconnect-api-reference-guide-si91x-services/firmware-fallback)
+
+若要加入本项目需要的可靠回退策略，启动决策可以整理成下面的**概念伪代码**。其中的策略函数需要自行设计，不能当作官方示例原样已有的逻辑：
+
+```c
+void updater_boot_flow(void)
+{
+    read_reset_reason_before_it_is_cleared();
+    if (!load_valid_slot_metadata_and_trial_record()) {
+        enter_recovery_mode();
+        return;
+    }
+    choose_slot_using_committed_state_and_trial_policy();
+    if (!verify_selected_image_and_security_policy()) {
+        if (!select_and_verify_allowed_previous_image()) {
+            enter_recovery_mode();
+            return;
+        }
+    }
+    persist_boot_attempt_if_trial();
+    prepare_watchdog_and_platform_handoff();
+    jump_using_platform_api();  /* 设置目标向量表、MSP，进入目标复位入口。 */
+}
+```
+
+启动选择依据可靠提交的槽位状态和试运行策略，不是每次随意找“版本号最大的镜像”；两份都不可用时保留恢复入口，不盲目跳转。
+
+<a id="bootloader-ab-vectors"></a>
+#### A/B 各有一张向量表吗？链接地址怎么办？
+
+**A、B 各自是一份完整应用，各有自己的向量表和复位入口，不是合并成一张。** 同一个 M4 核在某一时刻只使用一个活动向量表基址；先用 Updater 的表，跳入 A 或 B 时切换为相应表。应用后续还可能按 SDK 配置把自己的表复制到 RAM，再修改 VTOR。
+
+```text
+Updater 的向量表 → 选择 A → A 的向量表 → A 的复位入口 → A 的 main()
+                └→ 选择 B → B 的向量表 → B 的复位入口 → B 的 main()
+```
+
+普通固定地址链接的代码中，向量表、函数指针等可能含绝对地址；把 A 镜像原样复制到 B，通常不能直接从 B 执行。同一份业务源码可分别按 A、B 的地址构建镜像，服务器提供适合目标槽位的文件；不是在一个 ELF 里定义两个业务 `main()`。有地址重映射或位置无关代码时是其他方案，不能假定本项目具备。
+
+两个应用不同时运行，因此可以使用相同 RAM 区域，向量表中的初始 MSP 也可以相同；它们的 Flash 执行地址和入口则各自匹配链接结果。交接时设置向量基址、初始 MSP 并跳到目标复位入口，优先采用平台跳转接口；不能在普通 C 函数中随意改 MSP 后继续执行依赖原栈的代码。见[VTOR 与启动交接](#bootloader-vtor-handoff)。
+
+<a id="bootloader-watchdog-rollback"></a>
+### 未来优化：用看门狗配合试运行，实现卡死后回退
+
+#### 先用简单例子理解看门狗
+
+硬件看门狗可以理解为“必须按约定报平安的倒计时”。例如配置约 2 秒超时，程序每完成一轮正常工作就喂狗；程序死循环导致一直没有喂狗时，看门狗到期触发复位。它只知道有没有按规定喂狗，不知道当前是 A 还是 B，也不知道业务是否真的正确。
+
+```c
+/* 概念伪代码：函数名、毫秒参数不是该芯片的 SDK 用法。 */
+watchdog_start_ms(2000);
+for (;;) {
+    do_one_bounded_work_cycle();
+    if (required_work_progress_is_healthy()) {
+        watchdog_feed();
+    }
+    delay_ms(200);
+}
+```
+
+SiWG917 提供窗口看门狗，支持超时中断及复位；窗口模式还需满足允许喂狗的时间窗口，不能认为越频繁喂越好。SDK 有初始化、配置、启动、重启计数及查询复位状态的接口；实际参数按文档的时钟/计数规则换算，不能把上面的 `2000` 直接当寄存器值。[SiWG917 看门狗接口](https://docs.silabs.com/wiseconnect/3.5.2/wiseconnect-api-reference-guide-si91x-peripherals/watchdog-timer)
+
+#### 为什么有看门狗还不够？
+
+只有看门狗时，很可能出现 `B 卡死 → 复位 → 再启动 B → 再卡死`。要回到 A，还须有引导选择策略、保留的可用旧镜像，以及可靠保存的试运行状态。下面是需要增加的**产品策略**，不能当作现有 SDK 已自动实现的业务确认机制。
+
+```text
+A 已确认可用 → B 下载并验证通过 → 可靠记录“B 待试运行，旧版为 A”
+                                            ↓
+                                    重启，Updater 启动 B
+                                            ↓
+                ┌── 自检与关键业务运行正常 ──→ 确认 B，结束试运行
+                │
+                └── 卡死/关键任务停滞 ──→ 停止喂狗 → 看门狗复位
+                                                      ↓
+                                    Updater 识别未确认的失败启动
+                                      ├─ 未达阈值：按策略重试 B
+                                      └─ 达到阈值：验证 A，切回 A
+```
+
+1. **持久化记录：** 保存待试运行槽位、原已确认槽位、启动尝试是否未完成及失败次数。普通全局变量复位后会重新初始化，不足以保存这些状态；在允许使用的非易失区域采用冗余、序号、CRC 与可恢复提交，并与厂商槽位元数据保持一致，不能随意覆盖保留区。
+2. **启动早期受保护：** Updater 在跳转前记录本次尝试，读取并保留复位原因；在可靠的早期路径启用看门狗，防止 B 在初始化就卡死。复位原因可能被初始化代码清除，要先读取；也要确认 B 不会意外关闭看门狗。
+3. **判断业务进展再喂狗：** 健康监控检查关键任务的进展，例如录音流程应推进时是否有 DMA 完成、控制任务是否持续响应。正常阻塞等待不算故障；不能只在定时器中断无条件喂狗，否则业务任务全卡住也可能一直“报平安”。心跳适合保存在 RAM，避免每次喂狗都写 Flash。
+4. **确认与截止时间：** B 完成关键初始化并稳定观察一段时间后确认，例如 30 秒只是设计示例，不是 SDK 固定值。试运行还应有最终确认期限，避免一直喂狗却永不确认；网络暂时断开也不应简单判定固件坏了。
+5. **失败与回退：** 根据未确认记录、看门狗/故障复位等判据累计失败，例如连续 3 次后选择仍有效的 A。阈值是产品配置；正常掉电和人工复位要有独立处理。通过官方槽位接口完成切换，必要时再复位；旧版必须仍满足安全版本与配置兼容要求。
+6. **喂狗时间预算：** 初始化和正常运行可有不同预算；Flash 擦写、NWP 握手等待、关中断等合法长操作都需计入。不能为掩盖死锁随意把超时无限加长，也不能过短造成正常 OTA 反复复位。
+
+B 确认后偶发一次看门狗复位，通常按重启策略处理；是否因连续运行故障再次退回旧版，是另一个明确设计的策略。**看门狗负责复位，Updater/引导逻辑负责选版本；断电安装恢复、试运行回滚、确认后主动回滚和安全防降级，是四个不同问题。**
+
 <a id="bootloader-ota-manual-rollback"></a>
 ### B 已确认运行，后来发现严重 Bug，怎样主动回滚到 A？
 
@@ -1534,31 +1878,6 @@ Bootloader 不一定要把 A 重新烧录一遍：若设计为两分区直接启
 
 **是否需要改 Bootloader 或 B？** 若 Bootloader 原本支持选择 A，且 B 已有接收回滚请求、写启动状态的能力，只需触发该流程，无需重新烧录程序。若 B 没有回滚指令，但 Bootloader 留有独立入口（例如开机按键、维护接口），或可通过调试接口修改启动状态，仍可选择 A。若唯一远程入口在 B、而 B 未实现设置回滚状态的能力，则无法凭空发送回滚命令；需要通过现有升级通道更新 B，或到现场使用恢复入口。若 Bootloader 根本不支持选择 A，仅修改 B 也不够，需先补齐引导方案；修改 Bootloader 本身应特别注意失效后的恢复路径。
 
-<a id="bootloader-ota-single-slot"></a>
-### Flash 只够放一个应用版本怎么办？
-
-若内部 Flash 只有一个应用分区，而且没有外部存储等位置保存旧镜像，就不能照搬完整的 A/B 方案。常见做法是保留**独立且受保护的 Bootloader**：旧应用收到升级请求后进入安全状态并重启；Bootloader 从网络或其他升级接口取得新镜像，擦写唯一的应用分区，写完后校验并启动。若候选镜像先暂存于外部 Flash，也可以先完整验证，再由 Bootloader 搬运到应用区。不能默认让正在从应用 Flash 执行的代码直接擦掉自身后继续运行；芯片能否边读边写、能否从 RAM 执行更新代码，都依具体硬件而定。
-
-```text
-内部 Flash：│受保护的 Bootloader│唯一的应用分区│
-旧应用请求升级 → 重启进入 Bootloader → 接收／取得新固件
-                                      → 擦写应用区 → 校验 → 启动新应用
-```
-
-**回滚与恢复要分清：** 如果旧镜像已被覆盖，设备本地没有完整旧版本，就无法像 A/B 那样直接切回旧固件；即使新固件校验通过，也可能在运行后暴露业务故障。升级中断或新应用无法启动时，只要 Bootloader 和恢复入口仍可用，就能再次通过网络、串口或 USB 写入可用固件，这是**重新刷入恢复**，不是本地自动回滚。若连 Bootloader 都损坏且没有 ROM 恢复途径，设备可能需要线下重新烧录。外部存储、额外暂存空间或精心设计的差分升级可以提供其他选择，但必须单独设计断电保护与镜像验证。
-
-<a id="bootloader-ota-recovery"></a>
-### 断电、空间不足与恢复
-
-| 故障点 | 设计时要保证什么？ |
-| --- | --- |
-| 下载或写入 B 中途断电 | A 仍完整可启动；B 没有通过校验前不可选为正式应用。 |
-| 更新“启动哪个版本”的状态时断电 | 状态写入要可恢复，例如冗余记录、序号和校验；重启后应能选出明确的有效版本。ESP-IDF 的 OTA 状态区使用两个可独立擦写的扇区处理这一问题。[ESP-IDF OTA 状态区](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/ota.html) |
-| 新版本能启动但运行不稳定 | 试运行期间不立即确认；故障后按回滚规则重新启动旧版本。 |
-| Flash 只够放一份应用 | 无法照搬完整 A/B 双镜像回滚；需按容量设计暂存空间和恢复入口，具体见[单应用分区升级](#bootloader-ota-single-slot)。 |
-
-Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路径或其他保护，应用分区再完整也可能无法启动。对带签名和防降级要求的产品，回滚旧固件还需与版本安全策略协调。
-
 <a id="bootloader-ota-questions"></a>
 ### 面试常见问题
 
@@ -1570,8 +1889,12 @@ Bootloader 本身也要考虑更新风险：若它损坏且没有 ROM 恢复路�
 6. **升级准备期间，旧应用要立刻停掉吗？** 不一定。双分区时它通常还要负责下载和校验；切换前再让业务安全停下、保存状态并重启。重启后交由 Bootloader 选择镜像。
 7. **单应用分区能做 OTA 和回滚吗？** 可以由受保护的 Bootloader 进行 OTA 擦写，但若没有保存旧镜像，就不能本地自动回滚；应保留升级失败后重新下载或串口等恢复路径。
 8. **B 已确认，但几天后发现 Bug；B 也没有回滚指令，怎么办？** 先看 Bootloader 是否有独立维护入口能选择仍有效的 A；有则设置下次启动 A 并重启。若只有 B 能远程设置启动状态，而它没有这个功能，就得先通过现有升级通道更新 B，或现场恢复；Bootloader 若不支持选 A，还须补齐引导能力。详见[确认后的主动回滚](#bootloader-ota-manual-rollback)。
+9. **本项目第一次烧录的 NWP 固件就是 Bootloader 吗？** 不是；NWP 无线固件和 M4 应用是两类镜像，两个 Bootloader 由芯片 ROM 提供。
+10. **项目没有 A/B，能否有 OTA 暂存区？** 可以。暂存新升级包用于安装，不表示保留了可直接启动的旧应用；也不能把暂存区当作用户可随意支配的空间。
+11. **只改 VTOR 就能启动 B 吗？** 不能。它只改变向量表基址；还须验证镜像、处理状态、设置初始 MSP 并进入 B 的复位入口，镜像本身也须按目标位置链接。
 
-**面试简答：** “应用下载新固件到备用区，校验格式、版本、完整性及需要的签名；Bootloader 在重启后试启动新版本。新版本自检成功才确认，否则按回滚规则启动旧版本。重点是断电后仍能确定有效镜像，且不能把 CRC 当作固件来源认证。”
+**结合机器狗的面试回答：**“我们使用 SiWG917 的厂商 ROM 启动链，没有自己实现 Bootloader。NWP 与 M4 分工运行无线固件和业务代码；应用通过 SDK 触发 OTA，由平台暂存、检查和安装镜像。保存的这版代码配置为 NWP 更新，未实现 A/B 业务回滚。后续可按官方 Fallback 布局引入 Updater 与两套槽位，再增加试运行确认、看门狗健康监控和可靠状态记录，实现新版本异常后的自动回退。”
+
 <!-- TOPIC:bootloader-ota:END -->
 
 <a id="smartcard-internship"></a>
