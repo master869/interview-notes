@@ -67,7 +67,7 @@
   - [驱动做过哪部分](#driver-work) · [项目代码怎样运行](#driver-oled-flow) · [驱动怎么调试](#driver-debug)
 - [嵌入式调试接口排障](#debug-interface)
 - [编程题](#coding-problems)
-  - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [无重复数字的三位数](#three-digit-permutations) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
+  - [只用 switch case 判断分数](#switch-score) · [按位与判断奇偶](#bitwise-parity) · [无重复数字的三位数](#three-digit-permutations) · [合并两个有序链表](#merge-sorted-lists) · [字符串反转](#reverse-string) · [手写 memcpy](#memcpy-code) · [判断大小端](#endianness-code) · [链表区间删除与拼接](#splice-linked-lists) · [判断链表是否有环](#linked-list-cycle) · [简易 malloc/free](#simple-allocator)
 - [实习与项目独立笔记](experiences/README.md)
   - [无锡融卡：STM32H563 智能卡读卡器](experiences/internship-smartcard-reader/README.md)
   - [FreeRTOS 语音交互桌面机器狗](experiences/project-voice-robot-dog/README.md)
@@ -4239,6 +4239,74 @@ void reverseString(char *s, int sSize) {
 
 **检查：** 两种写法都能处理空串、单字符及奇偶长度，时间 `O(n)`、额外空间 `O(1)`。传入的数组必须可写；第二种写法中 `sSize` 不包含 C 字符串末尾的 `\0`，且不能大于实际可访问的元素数。两种写法都是**按字节** 反转，不能直接用于需要保持 UTF-8 中文字符完整的场景。[相关原题：Reverse String](https://leetcode.com/problems/reverse-string/)
 <!-- TOPIC:reverse-string:END -->
+
+<a id="memcpy-code"></a>
+### 手写 `memcpy`：逐字节复制内存
+<!-- TOPIC:memcpy-code:START -->
+
+**题目：** 用 C 实现 `memcpy` 的基本功能，将源内存中的 `n` 个字节复制到目标内存，返回目标起始地址。这里用 `my_memcpy` 命名，避免与标准库函数冲突。
+
+**思路：** 把两个地址转换成 `unsigned char *` 和 `const unsigned char *`，逐字节复制。字符类型可以访问对象的内存表示；标准 C 不能直接对 `void *` 解引用或进行下标访问。源参数带 `const`，表示不通过该指针修改源内容。C 允许这里的 `void *` 指针转换隐式完成，不必显式强转。
+
+```c
+#include <stddef.h>
+
+void *my_memcpy(void *dest, const void *src, size_t n)
+{
+    unsigned char *d = dest;
+    const unsigned char *s = src;
+
+    for (size_t i = 0; i < n; ++i) {
+        d[i] = s[i];
+    }
+
+    return dest;
+}
+```
+
+| 参数 / 返回值 | 含义 |
+| --- | --- |
+| `dest` | 目标内存起始地址，目标区域必须可写。 |
+| `src` | 源内存起始地址，源区域必须可读。 |
+| `n` | 要复制的字节数，不是数组元素个数。 |
+| 返回值 | 原始目标地址 `dest`，不是复制结束后的地址。 |
+
+**例子：复制字符串和整数数组。** 将上面的函数定义放在下面 `main()` 之前即可编译运行。
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    char src[] = "hello";
+    char dest[sizeof(src)];
+    my_memcpy(dest, src, sizeof(src));
+    puts(dest);  /* hello */
+
+    int values[] = {10, 20, 30};
+    int copied[3];
+    my_memcpy(copied, values, sizeof(values));
+    printf("%d %d %d\n", copied[0], copied[1], copied[2]);
+    return 0;
+}
+```
+
+```text
+字符串例子：sizeof(src) = 6，连同末尾的 '\0' 一起复制
+源内存： h e l l o \0
+         ↓ ↓ ↓ ↓ ↓ ↓
+目标：   h e l l o \0
+```
+
+**注意事项：**
+
+- 调用者保证源区域至少有 `n` 个可读字节、目标区域至少有 `n` 个可写字节；本函数不会自动分配目标空间或检查容量。
+- `memcpy` 的使用约定是源、目标区域不重叠；需要处理重叠时使用 `memmove` 的思路，这个从前往后复制的版本不保证重叠复制正确。
+- 它按指定长度复制任意字节，遇到 `0` 也继续，不识别字符串、不自动补 `\0`。例子能正确打印，是因为 `sizeof(src)` 已包含字符串终止符。
+- 复制整数数组应传 `sizeof(values)`，不能因为有 3 个元素就只传 `3`。若拿到的只是指针，`sizeof(指针)` 也不是它指向的整个缓冲区大小。
+- `n == 0` 时循环不执行，返回原目标指针。时间复杂度 `O(n)`，额外空间复杂度 `O(1)`；这是便于手撕和理解的基础实现。
+
+<!-- TOPIC:memcpy-code:END -->
 
 <a id="endianness-code"></a>
 ### 判断大小端
