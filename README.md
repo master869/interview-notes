@@ -39,7 +39,7 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`volatile`](#volatile) · [`const` 与 `volatile`](#const-volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
+  - [`const`：作用与使用场景](#const) · [`volatile`](#volatile) · [`const` 与 `volatile`](#const-volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
 - [数据结构：栈与队列](#stack-queue)
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
@@ -1925,6 +1925,139 @@ USBX 是嵌入式 USB 协议栈，CCID 是智能卡读卡器使用的 USB 设备
 <a id="c-basics"></a>
 ## C/C++ 基础
 
+<a id="const"></a>
+### `const`：作用与使用场景
+<!-- TOPIC:const:START -->
+
+**面试问题：C 语言中的 `const` 有什么作用？修饰变量和指针有什么区别？**
+
+`const` 是类型限定符，用于限制通过相应变量或指针修改对象。它帮助表达只读接口、避免误修改，但不直接决定对象的存储位置、生命周期或链接属性。本节示例按 C 语言解释；不要直接套用 C++ 的常量表达式与链接规则。
+
+<a id="const-objects"></a>
+#### 修饰变量和数组：定义只读数据
+
+```c
+const int max_speed = 100;
+const unsigned char command[] = {0xA5, 0x01, 0x00};
+
+/* max_speed = 200;  // 错误：不能给 const 对象赋值 */
+/* command[0] = 0;   // 错误：数组元素是 const */
+```
+
+适合表示不应在运行中修改的配置、协议命令模板和查找表。若对象本身定义为 `const`，强制去掉限定符后尝试修改它是**未定义行为**，不能因为“编译通过”或“暂时没崩溃”就认为合法。
+
+<a id="const-pointers"></a>
+#### 修饰指针：限制数据，还是限制指向？
+
+| 声明 | 指针能否改变指向 | 能否通过该指针修改所指数据 |
+| --- | --- | --- |
+| `const int *p` 或 `int const *p` | 能 | 不能 |
+| `int * const p` | 不能 | 能，前提是所指对象允许修改 |
+| `const int * const p` | 不能 | 不能 |
+
+可以读成：`const int *p` 是“指向 const int 的指针”；`int * const p` 是“指向 int 的 const 指针”。
+
+```c
+int a = 10;
+int b = 20;
+
+const int *p = &a;
+p = &b;             // 可以：修改指针的指向
+/* *p = 30; */      // 错误：不能通过 p 修改数据
+b = 30;             // 可以：b 本身不是 const 对象
+
+int * const q = &a;
+*q = 40;            // 可以：修改 a
+/* q = &b; */       // 错误：不能修改 q 的指向
+
+const int * const r = &a;
+/* r = &b; */       // 错误
+/* *r = 50; */      // 错误
+```
+
+**重点：只读访问路径不等于数据永远不变。** 上例中的 `p` 不能用来写 `b`，但 `b` 可以通过变量名或其他合法的可写指针改变。若是硬件更新的只读状态寄存器，可同时使用 `const volatile`，详见[下一小节](#const-volatile)。
+
+<a id="const-parameters"></a>
+#### 修饰函数参数：明确输入缓冲区只读
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+
+uint8_t xor_bytes(const uint8_t *data, size_t len)
+{
+    uint8_t result = 0;
+    for (size_t i = 0; i < len; ++i) {
+        result ^= data[i];
+    }
+    return result;
+}
+```
+
+`data` 指向输入数据，函数只能通过它读取，不能写 `data[i]`。适合串口帧解析、CRC 计算、显示发送数据和 Flash 写入接口中的源缓冲区；实际写硬件的是驱动，源缓冲区本身可以是只读的。上例是异或校验，不是 CRC 实现；CRC 见[相关章节](#crc)。
+
+`const uint8_t *data` 并不限制函数内部让 `data` 指向下一字节，也不保证其他任务或 DMA 不会同时修改缓冲区。共享数据的一致性仍须通过所有权约定、同步或平台要求的缓存维护保证。
+
+**追问：`void f(const int value)` 能保护调用者的变量吗？** 这里 `value` 按值传递，本来就是副本；`const` 只限制函数内部修改这个副本。若想表达“通过指针读取调用者的数据”，应使用 `const int *`，不能混淆这两种参数。
+
+<a id="const-combinations"></a>
+#### 与 `static`、`extern` 配合：模块私有表与跨文件常量
+
+模块内部的只读查找表可以写成：
+
+```c
+/* motor.c，文件作用域 */
+static const unsigned short speed_table[] = {100, 200, 300};
+```
+
+这里 `static` 使表具有内部链接，`const` 限制修改表元素。适合驱动初始化表、字模、校准系数等。文件作用域对象本来就具有静态存储期，不能把这里的 `static` 解释为“原来在栈上，现在不在栈上”。
+
+需要跨文件共享时，在头文件中声明，在一个源文件中定义：
+
+```c
+/* config.h：实际项目应添加头文件保护 */
+extern const unsigned int max_speed;
+```
+
+```c
+/* config.c */
+#include "config.h"
+const unsigned int max_speed = 100U;
+```
+
+```c
+/* motor.c */
+#include "config.h"
+
+unsigned int motor_speed_limit(void)
+{
+    return max_speed;
+}
+```
+
+`extern const unsigned int max_speed;` 只是声明，不提供该对象的存储空间；带初始化器的文件作用域声明（即便写了 `extern`）也是定义。**C 中普通文件作用域的 `const` 定义默认具有外部链接**，不要像上例的定义那样直接放进被多个 `.c` 文件包含的头文件，否则通常会重复定义。C++ 中普通命名空间作用域的非 `extern`、非 `inline` const 变量默认内部链接，规则不同。
+
+<a id="const-pitfalls"></a>
+#### 常见误区：Flash、常量表达式和线程安全
+
+- **`const` 不保证放在 Flash 或 `.rodata`。** 文件级只读表通常可放在只读区域；局部 const 对象可能在栈、寄存器中，或被优化掉，取决于工具链和链接配置。参见[六大内存分区](#memory-layout)。
+- **`const` 不会延长局部对象的生命周期。** 返回局部 `const` 数组的地址仍然会产生悬空指针；要区分作用域、存储期和类型限定。
+- **C11/C17 中的 `const int n = 10;` 不使 `n` 成为整数常量表达式。** 例如 `case n:` 不符合要求；`int a[n];` 在支持 VLA 的块作用域实现中是变长数组，不是因为 `n` 带 const 就成为固定长度数组。需要整数常量表达式时，可用 `enum { N = 10 };` 或合适的宏。
+- **`const` 不提供锁或原子性。** 通过 const 指针读取可变共享对象，不会自动避免数据竞争；`volatile` 也不能代替线程同步。
+
+**与 `static`、`extern` 的面试对照：**
+
+| 关键字 | 主要解决什么问题 | 典型场景 |
+| --- | --- | --- |
+| `const` | 限制通过相应访问方式修改对象 | 只读输入参数、配置和查找表 |
+| `static` | 局部对象具有静态存储期；文件级变量或函数具有内部链接 | 跨调用保留状态、模块私有实现，见 [`static`](#static) |
+| `extern` | 声明具有链接的变量或函数，引用其他位置的定义 | 头文件中声明跨文件共享的对象或接口 |
+
+**面试简答：** “`const` 是类型限定符，用来表达只读约束。修饰普通对象时不能修改该对象；`const int *p` 限制通过指针改数据，`int * const p` 限制指针改变指向，两者可以组合。常用于输入参数和只读配置表，也能与 static、extern 配合。它不保证放在 Flash、不改变局部变量的生命周期，也不提供线程同步。”
+
+参考：[C11 标准草案：6.2.2 链接、6.6 常量表达式、6.7.3 类型限定符与 6.9.2 外部对象定义](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+<!-- TOPIC:const:END -->
+
 <a id="volatile"></a>
 ### `volatile`
 <!-- TOPIC:volatile:START -->
@@ -1995,7 +2128,7 @@ uint32_t read_status(const volatile uint32_t *status)
 }
 ```
 
-硬件可能随时更新状态，所以需要 `volatile`；程序不应写这个寄存器，所以使用 `const`。两者并不矛盾。`volatile` 的完整使用边界见[已有章节](#volatile)，不要把它理解为缓存同步或加锁。
+硬件可能随时更新状态，所以需要 `volatile`；程序不应写这个寄存器，所以使用 `const`。两者并不矛盾。`const` 的变量、指针和参数用法见[独立章节](#const)；`volatile` 的完整使用边界见[已有章节](#volatile)，不要把它理解为缓存同步或加锁。
 
 参考：[C11 标准草案：类型限定符](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
 <!-- TOPIC:const-volatile:END -->
