@@ -8,6 +8,8 @@
 
 - [六大内存分区](#memory-layout)
   - [一段代码看变量位置](#memory-example) · [各区域的作用](#memory-regions) · [堆与栈详解](#memory-stack-heap) · [MCU 启动时发生什么](#memory-startup) · [常见追问](#memory-questions)
+  - [整块任务栈与栈帧](#memory-stack-frames) · [机器狗 RAM／堆／栈布局](#memory-dog-ram) · [I2S 任务栈申请与释放路径](#memory-dog-stack-create)
+  - [中断使用哪个栈](#memory-interrupt-stacks) · [堆不足、栈溢出与扩容](#memory-exhaustion) · [多个堆与多片 RAM](#memory-multiple-heaps)
 - [Cortex-M MCU 上电启动流程](#mcu-boot)
   - [复位与启动地址](#mcu-boot-reset) · [向量表与第一条指令](#mcu-boot-vector) · [启动代码和变量初始化](#mcu-boot-runtime)
 - [Cortex-M 核心与外设寄存器](#cortex-m-registers)
@@ -127,6 +129,16 @@ void draw_page(void) {             // 函数指令通常在 .text
 
 **堆和栈通常都使用 RAM；它们描述的是空间的组织和管理方式，不是两种不同的存储芯片。** 栈主要服务于函数调用和执行现场，动态分配区主要服务于运行时申请、生命周期由程序管理的数据。具体起止地址、容量和布局由平台、链接配置及分配器决定。
 
+| 对比项 | 栈 | 堆／动态分配空间 |
+| --- | --- | --- |
+| 管理方式 | 编译器生成的指令、CPU 异常机制等管理调用期间的占用 | 分配器管理内存块，程序直接或通过库／RTOS 间接申请与释放 |
+| 生命周期 | 普通自动对象通常在代码块退出时结束；一次调用的栈占用在返回时可复用 | 成功分配的对象持续到释放，不因申请函数返回而自动销毁 |
+| 分配开销 | 通常通过调整栈指针等操作完成，开销较小 | 取决于分配器，可能遍历、拆分和合并空闲块 |
+| 典型用途 | 调用现场、需要落栈的局部数据、异常现场 | 缓冲区、链表节点，以及动态创建任务的栈和 TCB |
+| 常见问题 | 超出栈边界、返回局部数组地址 | 申请失败、碎片、泄漏、重复释放、释放后使用 |
+
+**“堆由程序员手动 malloc/free”只是简化说法。** 动态分配可以封装在任务创建或库接口内部；也可以使用 `pvPortMalloc/vPortFree`、内存池接口等，不必出现 C 库的 `malloc/free`。栈和堆也没有通用的“一个一定连续、另一个一定不连续”“一个很小、另一个几乎无限”的规定。
+
 #### 栈：按函数调用组织的执行空间
 
 函数执行时，编译器可能为它建立一个 **栈帧（stack frame）**，用于保存这次调用需要的内容。常见内容包括：
@@ -229,7 +241,139 @@ void show_memory_example(void)
 
 **不要背成“堆一定向上、栈一定向下，而且两者一定相邻”。** 某些简单 MCU 工程采用低地址安排静态数据与堆、高地址安排向下增长栈的布局；但这不是 C 语言通则。RTOS 多任务栈可以分布在不同位置，堆也可以管理多个区域。实际布局应查看链接脚本、map 文件和调试器；栈容量与使用量的确定方法见[任务栈大小](#task-stack-sizing)及[栈水位检查](#freertos-stack-check)。
 
-**面试简答：** “栈保存调用现场、需要落栈的局部变量和部分参数等，通常随调用自动分配回收；堆保存运行时申请的缓冲区或对象，由程序明确管理其释放。局部指针本身可能在栈或寄存器里，它指向的动态对象才来自堆。两者通常都在 RAM，但具体位置、增长方向以及任务栈的分配来源取决于平台。”
+<a id="memory-stack-frames"></a>
+#### 整块任务栈与栈帧：手动配容量，运行时自动使用
+
+**创建任务时准备整块栈，函数调用时使用其中的一部分。** 例如给 I2S 任务配置 3 KiB 栈，容量在任务创建时确定；任务入口及其调用的函数共用这块空间，不是每调用一次函数就向堆申请一个新栈。
+
+下面的占用数字仅为教学示意，不是项目实测值：
+
+| 执行阶段 | 当前任务栈占用 | 已分配的任务栈容量 |
+| --- | --- | --- |
+| 任务函数运行 | 200 B | 3 KiB |
+| 调用采集处理函数 | 400 B | 3 KiB |
+| 进一步调用处理函数 | 700 B | 3 KiB |
+| 内层函数返回 | 恢复到 400 B | 3 KiB |
+| 采集处理函数返回 | 恢复到 200 B | 3 KiB |
+
+函数返回时通常恢复栈指针，使本次调用占用的位置可复用，**不会因此把整块任务栈归还堆**。任务调用 `osDelay()`、阻塞等待或被切换出去时，栈和执行现场同样保留；恢复调度后接着执行。普通 MCU 任务栈通常不会自动扩容。
+
+<a id="memory-dog-ram"></a>
+#### 机器狗项目：190 KiB RAM、50 KiB 堆、24 KiB 业务任务栈
+
+以下数值来自已核对的 `wifi_http_otaf_soc_4_28` 源码配置，不代表运行时水位测量，也不是其他版本的默认值：
+
+| 项目 | 已核对配置 | 含义 |
+| --- | --- | --- |
+| 普通 RAM 链接区 | `autogen/linkerfile_SoC.ld`：起始 `0x400`，长度 `0x2f800`，即 **190 KiB** | 此区域可安排的容量，不是已用／空闲量，也不等于芯片全部 RAM |
+| FreeRTOS 堆 | `configTOTAL_HEAP_SIZE = 51200`，即 **50 KiB** | `heap_4` 管理的空间，包含在上述 RAM 中 |
+| 九个业务任务的配置栈容量之和 | `app.c` 中合计 **24 KiB** | 成功动态创建后占用堆中的相应空间，不含 TCB 等开销 |
+| 主栈 | `SL_STACK_SIZE = 12288`，即 **12 KiB** | 单独的 `.stack` 区域，启动及中断处理等使用，不从该 FreeRTOS 堆申请 |
+
+24 KiB 的计算是：`app`、`i2s_capture`、`speaker_playback`、`pwm_ctrl`、`i2c_leader` 各 3 KiB，`mqtt` 4 KiB，`button0` 2 KiB，`led_blink` 1 KiB，`audio_uploader` 2 KiB。它是这些业务任务的配置合计，不是系统所有任务的栈总和，也不意味着它们在每个启动阶段都已经创建成功。
+
+```text
+普通 RAM 链接区：190 KiB（用途示意，不代表实际地址顺序）
+  ├─ ucHeap：50 KiB，通常位于 .bss
+  │   ├─ 九个业务任务的栈：合计 24 KiB
+  │   ├─ 各动态任务的 TCB、其他 SDK 动态任务资源
+  │   ├─ 动态队列等对象、分配管理开销
+  │   └─ 剩余空闲块
+  ├─ 全局音频数组 audio_buffer：32000 B，约 31.25 KiB
+  ├─ I2S 乒乓缓冲 pp_buf_a / pp_buf_b：各 4 KiB
+  ├─ 其他全局／静态数据、静态任务资源及放在 RAM 的其他内容
+  ├─ sl_stack：12 KiB，位于 .stack
+  └─ 其他运行时可用空间
+```
+
+**24 KiB 已包含在 50 KiB 内，RAM 预算不能重复相加。** 此版的音频数组在文件作用域定义，按 16000 样本、每样本 2 字节计算；它和两个文件级乒乓缓冲不经过 `pvPortMalloc()`，也不占 I2S 任务的 3 KiB 栈。不能把“所有 RAM 数据都来自 FreeRTOS 堆”当成规则。
+
+此外，SDK 的启动任务配置了 4 KiB 动态栈，会产生启动阶段的需求；任务结束后须完成资源清理才能回收。Idle、Timer 任务的内存提供函数则使用静态栈和 TCB 数组，不能将它们一概计入这片动态堆。实际峰值应结合创建时序、链接 map 文件与运行时监测确认。
+
+<a id="memory-dog-stack-create"></a>
+#### I2S 任务栈创建路径：没写 malloc，也发生了动态分配
+
+`app.c` 的 `i2s_thread_attributes` 配置包含：
+
+```c
+/* 属性节选；实际定义还包括名称、优先级等。 */
+.cb_mem     = 0,
+.cb_size    = 0,
+.stack_mem  = 0,
+.stack_size = 3072,
+```
+
+`stack_size` 表示所需容量，`stack_mem = 0` 表示没有提供现成栈地址；`cb_mem = 0`、`cb_size = 0` 表示没有提供控制块存储。**属性结构体本身不是任务栈；其 const 限定也不使任务栈变成静态创建。**
+
+```text
+app_init()
+  → start_local_peripheral_threads()
+  → osThreadNew(i2s_capture_thread, NULL, &i2s_thread_attributes)
+  → cmsis_os2.c：3072 字节 / sizeof(StackType_t) = 768 个元素
+  → xTaskCreate() → prvCreateTask()
+  → pvPortMallocStack(768 × 4)：申请 3072 字节任务栈
+  → pvPortMalloc(sizeof(TCB_t))：另外申请任务控制块
+  → prvInitialiseNewTask() → pxPortInitialiseStack()
+  → 初始化栈顶和任务入口等初始现场，加入就绪队列
+```
+
+这里 CMSIS-RTOS2 的 `.stack_size` 单位是**字节**；本项目 `StackType_t` 是 4 字节，适配层才把它转换为原生 FreeRTOS 栈深度。不要把 `osThreadNew()` 中的 3072 再按 4 字节乘一次。当前工程未启用独立任务栈堆，`portable.h` 将 `pvPortMallocStack` 映射为 `pvPortMalloc`。
+
+底层不是先调用 `malloc(51200)` 创建整个池，而是在 `heap_4.c` 中预留：
+
+```c
+/* 省略 SDK 的属性宏。 */
+static uint8_t ucHeap[configTOTAL_HEAP_SIZE];
+```
+
+`heap_4` 自行维护这个数组内部的空闲块，通过 `pvPortMalloc()` 申请，通过 `vPortFree()` 归还；它不是 C 库 `malloc/free` 的简单转调。动态任务的删除清理路径则是：
+
+```text
+osThreadTerminate() → vTaskDelete()
+  → 适时执行 prvDeleteTCB()（自删除任务的清理由 Idle 任务完成）
+  → vPortFreeStack(pxTCB->pxStack) → vPortFree()
+  → vPortFree(pxTCB)
+```
+
+归还的是池内的任务栈／TCB 内存块，整片 50 KiB 数组仍然存在。任务正常循环、函数返回和 `osDelay()` 都不会触发这种整栈回收；删除任务也不会自动替应用释放该任务另行申请的所有业务缓冲区。
+
+<a id="memory-interrupt-stacks"></a>
+#### 中断来临时：使用已有任务栈和主栈，不临时创建新栈
+
+在本项目 Cortex-M4F FreeRTOS 移植中，任务运行使用 PSP，Handler 模式使用 MSP。主栈来自 `sl_si91x_stack_object_declare.c` 中放入 `.stack` 的 `sl_stack[SL_STACK_SIZE]`；链接脚本定义 `__StackTop`，启动向量表用它提供初始 MSP。
+
+```text
+I2S 任务运行：PSP 指向它的 3 KiB 任务栈
+  → 中断到来：硬件在当前任务栈保存基本异常现场
+  → 进入 Handler 模式：中断函数自身使用 MSP 主栈
+  → 若返回原任务：恢复任务栈中的现场，继续执行
+```
+
+如果随后发生任务切换，`port.c` 的 `xPortPendSVHandler()` 还会保存其余任务现场、把栈位置记入 TCB，再恢复被选中任务的 PSP。浮点上下文、对齐及嵌套会影响实际用量；不能认为所有现场都在一块中断栈中，也不能认为发生中断就要 `malloc()`。中断未使用完的栈余量和各任务栈余量要分别评估，参见[任务切换](#freertos-context-switch)与[中断嵌套](#interrupt-nesting)。
+
+<a id="memory-exhaustion"></a>
+#### 堆不足、任务栈溢出与扩大容量：是不同问题
+
+| 情况 | 例子 | 正常表现或风险 | 应对方向 |
+| --- | --- | --- | --- |
+| 堆无法满足申请 | 再创建任务需要 4 KiB 连续空间，但分配器无法提供 | `pvPortMalloc()` 返回 NULL；本项目任务创建失败时 `osThreadNew()` 返回 NULL | 检查容量、碎片、泄漏和失败处理，必要时扩大堆 |
+| 某任务栈溢出 | I2S 栈容量 3 KiB，实际执行使用越过其边界 | 即使总堆仍空闲，也可能破坏其他内存、HardFault 或异常 | 检查调用深度、局部数组与现场开销，调整该任务栈 |
+| 静态布局放不下 | 扩大 ucHeap 后，链接区不能容纳全部段 | 可能链接失败；即便能链接，也可能挤压其他运行时余量 | 核算 map 文件、RAM 布局与全部内存预算 |
+
+50 KiB 不是硬件规定，确有 RAM 预算时可以把 `configTOTAL_HEAP_SIZE` 改为例如 `(80U * 1024U)` 并重新构建；这会让 `ucHeap` **额外占用 30 KiB RAM**，并不增加芯片物理容量。当前镜像中该数组占一段固定连续地址，起始地址由链接器安排，重新链接后可能变化；这只是管理边界，不自动提供 MPU 访问保护。
+
+**扩大总堆不等于扩大已经配置的任务栈；扩大某个任务栈也不等于扩大总堆。** 创建任务时栈容量整体占用堆，不是任务运行时用了几百字节才扣几百字节。24 KiB 业务栈之和小于 50 KiB，仍须预算 TCB、启动／SDK 动态任务和其他对象。监测总剩余堆、历史最小剩余堆与最大连续空闲块；任务栈则监测[高水位](#freertos-stack-check)，覆盖最深调用和异常路径。本版 `configCHECK_FOR_STACK_OVERFLOW`、`configUSE_MALLOC_FAILED_HOOK` 均为 0，不能假定已启用自动诊断。
+
+<a id="memory-multiple-heaps"></a>
+#### 多个堆与多片 RAM：分配器边界不等于硬件区域数量
+
+多个独立堆常见于：FreeRTOS 与 C 库各有自己的分配空间；业务／USB／网络分别建立专用分配池；或内部快速 RAM 与外部 RAM 分别管理。每套分配器有自己的状态与预算，申请、释放接口必须正确配对。固定块池与通用变长堆也不是完全相同的分配方式。
+
+**一个连续 RAM 区可以划成多个堆，多片不连续 RAM 也可以交给 heap_5 统一管理。** `heap_1`～`heap_5` 是五种可选实现，不是默认分配五块堆，区别见[FreeRTOS 堆章节](#freertos-heap)。`heap_5` 的多个区域共用一套分配接口，单次申请仍需连续空间，也不会自动给不同模块设置独立预算。
+
+不能只看函数名或链接段名判断堆数量：`heap_3` 可以让 `pvPortMalloc()` 使用 C 库 `malloc()`；本机器狗工程链接脚本中的 `.heap` 与 `heap_4` 的 `ucHeap` 也不是同一对象。是否另有实际使用的 C 库堆，要继续核对最终 malloc 实现与链接结果，不能仅凭出现 `.heap` 断定。分池只能限制分配额度，无 MPU 等保护时，越界写仍可能破坏其他区域。
+
+**面试简答：** “栈保存函数执行和上下文所需的数据，调用期间的占用通常自动管理；堆用于按需分配，对象持续到释放。我使用的 FreeRTOS 工程从 50 KiB 堆中为业务任务申请各自的固定容量栈，I2S 任务是 3 KiB。任务运行后在自己的栈内完成调用与现场保存，函数返回不会释放整块任务栈。190 KiB 是当前普通 RAM 链接区容量，堆只是其中一部分。堆不足通常导致申请失败，任务栈越界则是另一种问题，不能混为一谈。”
 
 <a id="memory-startup"></a>
 ### MCU 启动时发生什么？
@@ -256,8 +400,11 @@ Flash / ROM                           RAM
 1. **`int x = 0` 一定在 `.data` 吗？** 若它是全局变量或静态变量，通常可放在 `.bss`；若它是普通局部变量，则具有自动存储期，不能只凭初值判断为 `.data`。
 2. **`static int n` 写在函数里，为什么不是栈变量？** `static` 让它在整个程序运行期间存在；它只初始化一次、跨调用保留值。参见下方 [`static` 小节](#static)。
 3. **`malloc` 得到的内存和指针变量各在哪里？** 分配得到的缓冲区属于动态分配；局部指针本身通常在栈或寄存器。参见 [`malloc` 与 `free`](#malloc-free)。
-4. **栈满或堆不够会怎样？** 动态分配失败通常以 `NULL` 表示；栈溢出的表现依平台及保护机制而异，在 MCU 上可能破坏其他内存。FreeRTOS 可通过[任务栈高水位](#freertos-stack-check)估算历史最小余量。
+4. **栈满或堆不够会怎样？** 动态分配失败通常以 `NULL` 表示；栈溢出的表现依平台及保护机制而异，在 MCU 上可能破坏其他内存。总堆还有空闲，单个任务也可能栈溢出；二者的区别与扩容见[详细对照](#memory-exhaustion)，任务余量看[栈高水位](#freertos-stack-check)。
 5. **这六块在 Linux 中也按图摆放吗？** 不一定。Linux 进程使用虚拟地址空间，还有共享库、内存映射等区域；可查看 `/proc/<pid>/maps` 观察映射，不能把上面的 MCU 示意图当成通用地址表。[Linux `proc_pid_maps(5)`](https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html)
+6. **任务栈从堆中申请，为什么还叫栈？** 来源和用途是两个角度；从堆取得整块空间后，任务以 SP 管理其中的调用占用，见[项目创建路径](#memory-dog-stack-create)。
+7. **没在中断函数里申请栈，中断现场存在哪里？** 通常使用已经准备好的任务栈和主栈，本项目 PSP／MSP 的分工见[中断栈说明](#memory-interrupt-stacks)。
+8. **heap_1～heap_5 是五块默认堆吗？** 不是，是五种可选管理实现；多个实际堆与多片物理 RAM 的关系见[相关章节](#memory-multiple-heaps)。
 
 **一句话复述：** `.text` 放指令，`.rodata` 放通常只读的数据，`.data` 放有初值的可写静态数据，`.bss` 放启动时清零的静态数据，动态分配区按需申请，栈跟随函数调用和任务／线程运行。
 <!-- TOPIC:memory-layout:END -->
@@ -3245,21 +3392,13 @@ FreeRTOS **并非运行就必须使用动态堆**：内核对象可以全部采�
 
 #### 机器狗工程实际怎么用？
 
-已核对 `wifi_http_otaf_soc_4_28` 源码：
+已核对 `wifi_http_otaf_soc_4_28` 源码，完整的容量关系见[190 KiB RAM／50 KiB 堆／24 KiB 业务栈](#memory-dog-ram)，申请和回收代码见[I2S 任务栈创建路径](#memory-dog-stack-create)：
 
 - `wifi_http_otaf_soc.slcp` 选择了 `freertos_heap_4` 组件；`config/FreeRTOSConfig.h` 的 `configTOTAL_HEAP_SIZE` 是 **51200 字节，即 50 KiB**。这是这片 FreeRTOS 堆的容量，不是整个芯片 RAM 大小。
 - `configSUPPORT_DYNAMIC_ALLOCATION` 和 `configSUPPORT_STATIC_ALLOCATION` 都为 `1`，表示两种创建方式都允许，不是每个对象分配两份空间。
 - 例如 MQTT 任务的 `.stack_size = 4096`，但 `.stack_mem = 0`、`.cb_mem = 0`、`.cb_size = 0`，没有提供静态内存。此版本 CMSIS-RTOS2 适配层走动态分支，调用 `xTaskCreate()`。
-- 随后内核分配 TCB 和任务栈；当前工程没有启用独立任务栈堆的覆盖配置，所以任务栈也来自这套分配器。任务栈、TCB、队列等会共同消耗这 50 KiB，不能把“总容量减去任务栈之和”直接当成剩余可用堆。
-
-```text
-工程预留的 FreeRTOS 堆（50 KiB）
-  ├─ app 的 TCB 与栈
-  ├─ mqtt 的 TCB 与 4096 字节栈
-  ├─ 其他动态创建任务的 TCB 与栈
-  ├─ 动态创建的队列等对象
-  └─ 分配管理开销与尚未分配的空间
-```
+- 随后内核分配 TCB 和任务栈；当前工程没有启用独立任务栈堆的覆盖配置，所以这些业务任务栈也来自这套分配器。Idle、Timer 的静态栈等资源另算，不能说系统所有栈都来自这个堆。
+- `heap_4` 的整片空间由静态数组 `ucHeap` 预留，不是通过 C 库 `malloc(51200)` 创建；分配器在数组内部拆分和回收块。扩大堆与扩大单个任务栈解决不同问题，见[堆不足与栈溢出](#memory-exhaustion)。
 
 **面试可以说：** “我没有在业务里手写任务内存的申请；工程使用 `heap_4`，通过 `osThreadNew()` 动态创建任务，适配层最终调用 `xTaskCreate()`，由内核分配 TCB 和栈。”
 
