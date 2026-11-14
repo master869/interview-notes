@@ -16,6 +16,7 @@
   - [核心与外设寄存器的区别](#register-categories) · [R0～R15](#core-registers) · [状态与控制寄存器](#special-registers)
 - [中断与中断嵌套](#interrupts)
   - [一次中断的流程](#interrupt-lifecycle) · [中断与异常、同步与异步](#interrupt-exception-types) · [中断嵌套](#interrupt-nesting) · [ISR 能做什么](#interrupt-isr-rules) · [ISR 与任务通信](#interrupt-task-communication) · [临界区与屏蔽中断](#interrupt-critical-section) · [面试追问](#interrupt-questions)
+  - [优先级分组与机器狗配置](#interrupt-priority-project) · [屏蔽中断、优先级延后与暂停调度](#interrupt-masking-vs-suspend)
 - [HardFault 定位](#hardfault)
   - [Keil 排查步骤](#hardfault-steps) · [寄存器现场例子](#hardfault-example) · [容易误判的情况](#hardfault-pitfalls)
 - [Cache 与 DMA](#cache-dma)
@@ -50,6 +51,7 @@
 - [裸机、RTOS 与 Linux](#baremetal-rtos-linux)
 - [FreeRTOS](#freertos)
   - [内核本质与 TCB](#freertos-kernel-tcb) · [状态与链表的关系](#freertos-state-lists) · [PendSV 切换源码解读](#freertos-pendsv)
+  - [SVC／PendSV／SysTick 分工](#freertos-core-exceptions) · [Tick 与时间片实现](#freertos-timeslice-tick) · [0.5 ms 主动让出示例](#freertos-yield-timeline)
   - [FreeRTOS 与 CMSIS-RTOS2 的关系](#freertos-cmsis-rtos2)
   - [任务调度](#freertos-scheduling) · [任务的四种状态](#freertos-task-states) · [任务切换与保存现场](#freertos-context-switch) · [高优先级任务与饥饿](#freertos-starvation) · [优先级反转](#freertos-priority-inversion) · [怎样满足实时要求](#freertos-realtime) · [任务间通信](#freertos-communication) · [创建任务](#freertos-task-creation) · [FreeRTOS 堆与五种实现](#freertos-heap) · [`heap_4` 分配原理](#freertos-heap4) · [任务栈大小如何确定](#task-stack-sizing) · [检查任务栈](#freertos-stack-check) · [FreeRTOS 与 Linux 的栈](#freertos-linux-stack)
   - [互斥量](#freertos-mutex) · [二值信号量](#freertos-binary-semaphore) · [队列](#freertos-queue) · [死锁：成因、避免与恢复](#freertos-deadlock)
@@ -611,6 +613,56 @@ flowchart LR
 
 进入 B 时要保存 A 的现场；B 返回后先接着执行 A，再返回普通任务。**同一抢占优先级的中断不能仅凭子优先级互相抢占**；子优先级主要决定同级请求同时待处理时谁先执行。Cortex-M 的 NVIC 优先级通常是 **数字越小、逻辑优先级越高**，这与 FreeRTOS 任务优先级不要混淆。嵌套层数增加也会增加 `MSP` 的栈使用量。[FreeRTOS 对 Cortex-M 中断优先级分组的说明](https://freertos.org/Documentation/02-Kernel/03-Supported-devices/04-Demos/ARM-Cortex/RTOS-Cortex-M3-M4)、[Arm 嵌套中断栈说明](https://documentation-service.arm.com/static/5e8e18c2fd977155116a3d48)
 
+<a id="interrupt-priority-project"></a>
+### 中断优先级分组与机器狗项目的实际配置
+
+抢占优先级决定能否打断正在执行的 ISR，子优先级主要决定同抢占级的待处理请求顺序。例如 A 的抢占级为 2、B 为 3，A 可在屏蔽条件允许时抢占 B；C 若与 A 同为抢占级 2，不能仅凭子优先级更高就抢占正在运行的 A。分组由 `SCB->AIRCR.PRIGROUP` 统一解释有效优先级位，不要求每个中断使用相同数字。[CMSIS NVIC 与优先级编码](https://arm-software.github.io/CMSIS_6/v6.3.0/Core/group__NVIC__gr.html)
+
+**区分中断编号、向量入口、优先级和使能状态。** 本项目 `I2S0_IRQn = 64` 是中断编号，向量入口是 `IRQ064_Handler`，平台默认设置的优先级编码为 5；编号 64 并不表示优先级 64。向量表保存入口地址，NVIC／系统异常优先级寄存器保存优先级；有入口不等于已经链接了有效驱动或使能了该 IRQ。启动文件对许多入口提供 `Default_Handler` 弱别名，最终实现由链接覆盖决定。
+
+已核对 `wifi_http_otaf_soc_4_28` 的配置：
+
+```c
+#define configPRIO_BITS 6
+#define configLIBRARY_LOWEST_INTERRUPT_PRIORITY 0x3f
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 5
+```
+
+设备头文件也声明 6 个有效优先级位，即 **64 个编码，0～63，数字越小越紧急**；`configPRIO_BITS = 6` 旁边的“6 priority levels”注释不准确，应理解为 6 位。按该位宽，寄存器格式的 `configMAX_SYSCALL_INTERRUPT_PRIORITY` 为 `5 << (8 - 6) = 0x14`，不能把它与传给 `NVIC_SetPriority()` 的未移位编码直接混比。
+
+**0～4 是合法的可配置优先级，但这些高紧急程度 ISR 不能调用 FreeRTOS 内核 API，包括 FromISR 接口；5～63 则可按移植和分组要求调用允许的 FromISR API。** 这个范围限制的是 API 调用，不是所有异常都必须设在 5～63。Reset、NMI、HardFault 使用固定优先级，不参与普通可配置分组；它们的固定优先级分别为 -3、-2、-1，与 IRQn 枚举中的负编号也不是一回事。[Arm 异常优先级](https://support.arm.com/documentation/ddi0403/d/System-Level-Architecture/System-Level-Programmers--Model/ARMv7-M-exception-model/Exception-priorities-and-preemption)
+
+下表是可见源码的设置路径，**不是已读取开发板的最终优先级／使能状态**：
+
+| 中断／异常 | 向量入口或编号 | 源码中的设置 |
+| --- | --- | --- |
+| 外部 IRQ 2～74 | 各自向量入口 | `sl_platform_init()` 调用 `sl_si91x_device_init_nvic()`，先统一设为 5 |
+| UDMA0、ULP DMA | `IRQ033_Handler`、`IRQ010_Handler` | 默认 5；I2S 配置使用 DMA，传输完成可经 DMA 分派到回调，不应只查 I2S 向量 |
+| I2S0、I2S1 | `IRQ064_Handler`、`IRQ014_Handler` | 默认 5；是否实际使能及最终处理实现需结合构建／运行确认 |
+| I2C0、PWM | `IRQ042_Handler`、`IRQ048_Handler` | 默认 5；输出 PWM 不等于一定开启了 PWM 中断 |
+| M4／网络处理器 P2P | `IRQ074_Handler` | P2P 初始化再次明确设为 5 |
+| ULP GPIO pin／group | IRQ 18／19 | 对应驱动配置时分别覆盖为 18／19 |
+| GPIO group 0／1 | IRQ 50／51 | 对应驱动配置时分别覆盖为 50／51 |
+| GPIO pin 0～7 | IRQ 52～59 | 对应驱动配置时分别覆盖为 52～59，并非所有分支都会执行 |
+| SVC | `SVC_Handler` | FreeRTOS 启动时设为 0 |
+| PendSV、SysTick | 对应核心异常入口 | FreeRTOS 启动时写为最低，6 位编码对应 63；平台其他阶段也有 SysTick 设置代码 |
+
+向量表有 75 个外部 IRQ 槽位，含保留／特殊占位；初始化默认循环从 IRQ 2 开始，不能据此说 IRQ 0、1 也被设成 5。优先级编码还要结合实际 PRIGROUP 才能拆为抢占级和子优先级；最终入口须对照当前 VTOR、链接符号及条件编译确认，不能把 SDK 目录里所有候选处理函数都认作实际启用的 ISR。
+
+**如何看实际生效值？** 初始化完成后，在普通任务中读取：
+
+```c
+/* 代码片段：使用工程现有设备头文件和 CMSIS 定义，不在 ISR 中打印。 */
+uint32_t group = NVIC_GetPriorityGrouping();
+uint32_t encoded = NVIC_GetPriority(UDMA0_IRQn);
+uint32_t preempt, sub;
+NVIC_DecodePriority(encoded, group, &preempt, &sub);
+uint32_t enabled = NVIC_GetEnableIRQ(UDMA0_IRQn);
+/* 查看 group、encoded、preempt、sub、enabled；这只是读取，不主动触发 IRQ。 */
+```
+
+使能只表示 NVIC 放行，还须考虑外设自己的使能／标志和全局屏蔽；它也不证明中断已经发生。没有实机寄存器或当前 ELF／map 时，只能明确源码默认值与覆盖条件。业务里的 `.priority = osPriorityAboveNormal` 配置的是任务，不会自动提高对应外设或 DMA 的中断优先级。
+
 <a id="interrupt-isr-rules"></a>
 ### ISR 能不能调用阻塞函数？
 
@@ -737,6 +789,32 @@ void TaskB(void *arg) {
 参考：[FreeRTOS ARM_CM4F：临界区、PendSV 和 SysTick 优先级实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/port.c)；[BASEPRI 操作与屏蔽门槛](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/portmacro.h)。
 
 临界区应尽量短：里面不要等待、打印、主动让出 CPU 或做整笔 I2C 传输，长时间屏蔽会增加中断延迟，某些外设还可能因来不及处理连续事件而丢数据。屏蔽中断不停止 DMA，也不自动阻止另一 CPU 核心访问；其他处理器和 FreeRTOS 移植的实现应单独核对。任务之间共用完整 I2C 事务通常用[互斥量](#freertos-mutex)，多核短临界区可对照[自旋锁](#spinlocks)。
+
+<a id="interrupt-masking-vs-suspend"></a>
+#### Tick／PendSV 为什么可能延后：屏蔽、优先级与暂停调度
+
+保护的目标是让一小段共享状态更新完整，例如索引与计数都更新完，再允许其他受保护的访问者使用。FreeRTOS 内核维护任务链表、队列等数据时也会短暂保护，不要求应用一定手写关中断。**Tick 或 PendSV 没有立即执行，不一定是代码主动关了中断。**
+
+| 情况 | 机制 | Tick 与 PendSV 的表现 | 保护范围／边界 |
+| --- | --- | --- | --- |
+| `taskENTER_CRITICAL()` | 本项目通过 BASEPRI 设置门槛 | 当前未移位阈值为 5，屏蔽 5～63，含最低级 Tick／PendSV | 0～4 的更紧急 IRQ 仍可响应，不能假定所有共享访问者都被挡住 |
+| `__disable_irq()` 等全局屏蔽 | 设置 PRIMASK | 可配置优先级异常暂不能激活，包含 Tick／PendSV | NMI、HardFault 不受这种普通屏蔽影响；应按原状态配对恢复，避免破坏嵌套 |
+| 更高优先级 ISR 正在执行 | NVIC 不允许低级异常抢占它 | 比如 DMA 为 5、Tick／PendSV 为 63，后者需等待 | 没有显式关中断也会延后；同抢占级异常也不能互相抢占 |
+| `vTaskSuspendAll()` | 暂停任务调度，而非持续屏蔽中断 | ISR 和 Tick 仍可进入，内核累计待处理 Tick／就绪变化；PendSV 即使进入也可能记录待调度后返回原任务 | 恢复调度时处理积累状态；不能阻止 ISR 访问共享数据 |
+
+本项目 `vPortEnterCritical()` 调用设置 BASEPRI 的代码并增加嵌套计数，只有最外层退出才解除该临界区屏蔽。`vTaskSwitchContext()` 则检查 `uxSchedulerSuspended`，暂停时记录待调度请求，而不是选择另一个任务。普通任务代码应使用对应的任务临界区接口，ISR 按移植要求使用 ISR 安全版本，不可直接混用。
+
+```text
+0.9 ms：任务进入覆盖 Tick／PendSV 的临界区
+1.0 ms：定时器到期，Tick 待处理，CPU 暂不进入其处理函数
+1.2 ms：退出最外层临界区
+         → 在异常优先级允许时处理 Tick
+         → 如需轮转，再处理 PendSV，实际切换晚于 1 ms
+```
+
+**屏蔽响应不等于停止硬件定时器，也不保证所有漏掉的 Tick 都能逐次补回。** 硬件 pending 状态不是无限事件队列，长时间屏蔽可能丢失多个节拍的信息；而暂停调度器时，Tick ISR 仍进入并由内核累计待处理 Tick，是另一种机制。Tickless 有意暂停周期唤醒并补偿时间，也要按其专门实现理解。
+
+扩大临界区会增加中断和任务唤醒延迟，因此只保护必要的短操作；等待队列、延时、打印、长外设事务不应放进去。暂停调度器期间也不能调用使当前任务阻塞的接口。BASEPRI 临界区与暂停调度都不能自动阻止 DMA 或另一 CPU 核心访问内存；保护方案必须覆盖实际参与者。[FreeRTOS 调度器接口说明](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/include/task.h) · [内核调度实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/tasks.c)
 
 <a id="interrupt-questions"></a>
 ### 常见面试追问
@@ -2993,16 +3071,65 @@ A Running → vTaskDelay(n > 0) → 延时链表中的 A（Blocked）
 
 **抢占式调度**：当 `configUSE_PREEMPTION=1`，更高优先级任务由 `Blocked` 变为 `Ready` 后，不必等当前任务主动 `yield` 或用完时间片，就可以切换过去。例如低优先级显示任务 A 正在运行，接收任务 B 阻塞等待 DMA 完成；DMA 中断通知 B，B 变为就绪。ISR 结束并允许调度后，若 B 优先级更高，内核保存 A 的现场并运行 B；B 再次等待数据时，A 从暂停处继续。**硬件中断打断 A** 与 **ISR 结束后 B 抢占 A** 是两个不同层次；具体何时请求切换还取决于移植、中断优先级和临界区。[FreeRTOS 调度规则](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling.md)
 
-**时间片轮转**主要处理**同一最高就绪优先级**上有多个任务的情况。设单核系统中 A、B 同优先级且一直就绪，演示用时间片 10 ms；假设两者从节拍边界开始运行：
+<a id="freertos-timeslice-tick"></a>
+#### Tick 怎样实现同优先级时间片轮转？
 
-| 时间 | 运行任务 | 队列变化 |
+**时间片轮转主要处理同一最高就绪优先级上有多个任务的情况。** 本节范围是已核对的机器狗单核 FreeRTOS 工程，其 `config/FreeRTOSConfig.h` 配置如下：
+
+```c
+#define configTICK_RATE_HZ     1000
+#define configUSE_PREEMPTION   1
+#define configUSE_TIME_SLICING 1
+```
+
+逻辑 Tick 周期为 `1 / 1000 s = 1 ms`，开启抢占和同优先级时间片。**每个 Tick 提供一次轮转检查机会，不保证每次都换任务，也不是给每个任务启动一个独立的 1 ms 倒计时。** 在常规 SysTick 路径下：
+
+```text
+Tick 异常 → xPortSysTickHandler() → xTaskIncrementTick()
+  → 推进时间，处理到期等待
+  → 当前优先级就绪链表长度 > 1 且开启抢占／时间片：请求切换
+  → 设置 PENDSVSET
+  → PendSV 保存当前现场，vTaskSwitchContext() 选择任务
+  → 恢复选中任务，异常返回
+```
+
+源码关键点：`tasks.c` 中 `xTaskIncrementTick()` 检查 `pxReadyTasksLists[pxCurrentTCB->uxPriority]`；运行中的任务仍保留在对应就绪链表中，因此长度大于 1 表示还有同级任务可以轮换。选择任务时，`listGET_OWNER_OF_NEXT_ENTRY()` 推进链表索引、跳过结束标记，取得下一个 TCB，形成同级轮转；不必每次真的把当前任务节点移到队尾，也不复制整个任务栈。
+
+假设 A、B 一直可运行、同为最高优先级，且忽略其他中断及切换开销，从 Tick 边界开始：
+
+| 时间 | 运行任务 | 下一个 Tick 时的选择 |
 | --- | --- | --- |
-| 0–10 ms | A | A 用完时间片，排到同优先级就绪队列尾部。 |
-| 10–20 ms | B | B 用完时间片，轮到 A。 |
-| 20–30 ms | A | A 从原来暂停的位置继续，不是重新执行任务函数。 |
-| 30–40 ms | B | 继续轮转。 |
+| 0～1 ms | A | 轮到 B |
+| 1～2 ms | B | 轮到 A |
+| 2～3 ms | A | 轮到 B |
 
-若 A 在第 6 ms 等待队列而阻塞，B 可以立即运行，无须等到 10 ms。若第 6 ms 有更高优先级任务 C 就绪，在抢占式配置下 C 也不必等 A 的时间片结束。FreeRTOS 用 `configUSE_TIME_SLICING` 控制是否仅因 tick 到来就轮转同优先级任务；**关闭时间片不等于关闭高优先级抢占**。时间片、抢占和主动阻塞是三种不同原因。[FreeRTOS 配置说明](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/examples/template_configuration/FreeRTOSConfig.h)
+若没有另一个同级就绪任务，Tick 可以处理完后继续原任务；更高优先级任务就绪、当前任务主动阻塞或让出，都可能在 Tick 之间触发调度。`configUSE_TIME_SLICING = 0` 只是关闭“仅因 Tick 到来而轮转同级任务”的行为，**不等于关闭高优先级抢占，也不等于所有切换都停止**。修改 Tick 频率还会影响时间分辨率与中断开销，不应仅为某个任务随意修改它。[FreeRTOS 调度源码](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/tasks.c) · [链表索引实现](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/include/list.h)
+
+<a id="freertos-yield-timeline"></a>
+#### A 在 0.5 ms 做完业务：阻塞、让出、继续循环和返回有什么区别？
+
+内核不知道“一轮业务做完了”，需要看任务是否仍可运行：
+
+| A 完成一轮后做什么 | 结果 |
+| --- | --- |
+| 进入下一轮循环，既不阻塞也不让出 | A 仍可运行；没有其他调度事件时，等下一个 Tick 再参与轮转 |
+| 等待空队列、延时等，真正进入阻塞 | A 暂时不能运行，请求调度，B 可以在下一个 Tick 前获得 CPU |
+| `taskYIELD()` | A 仍在就绪队列中，主动给同优先级的 B 运行机会；切换仍受临界区、异常优先级和调度器状态约束 |
+| `vTaskDelete(NULL)` | 删除当前任务，请求调度；自删除任务的栈和 TCB 后续由 Idle 清理 |
+| 任务入口直接 `return` | 普通 FreeRTOS 任务不应直接返回；该 Cortex-M4F 移植会进入任务返回错误处理，不可视为正常结束方式 |
+
+在 A、B 持续可运行、同为最高优先级且开启抢占／时间片的条件下，A 在 0.5 ms 调用 `taskYIELD()`：
+
+```text
+0 ms                  0.5 ms                  1 ms
+│────── A 运行 ─────────│────── B 运行 ──────────│── A 继续运行……
+                       ↑                       ↑
+                 A 主动请求调度          Tick 再次请求轮转
+```
+
+**B 没有做完业务，也可以在 1 ms 被切走。** 全局 Tick 节奏不因 yield 重置，B 可能只获得约 0.5 ms，不能认为一定运行到 1.5 ms。A 从 `taskYIELD()` 返回后的代码继续，B 下次也从被暂停处继续；若任务阻塞、就绪集合变化或切换被延后，时间线随之改变。若 A 在 0.5 ms 真正阻塞且到 1 ms 仍未就绪，Tick 不会为了“轮到 A”强行运行它。
+
+这也是为什么不能把时间片理解为精确的 CPU 时间配额：任务可能在两个 Tick 之间开始运行，高优先级任务、ISR、[屏蔽中断与暂停调度](#interrupt-masking-vs-suspend)都影响实际执行时长。你的 I2S 任务调用 `osDelay(2)` 时是真正延时阻塞，与 `taskYIELD()` 保持就绪不同；CMSIS 的这个参数按 Tick 计。[FreeRTOS 配置说明](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/examples/template_configuration/FreeRTOSConfig.h)
 
 **协作式调度**：当 `configUSE_PREEMPTION=0`，任务通常要通过 `taskYIELD()`、阻塞、挂起等方式交出 CPU；更高优先级任务变为就绪，并不按普通抢占规则立刻替换当前任务。**协作式不等于关闭硬件中断**：ISR 仍可打断任务；官方文档还列出 ISR 显式请求上下文切换这一例外。长时间计算而不让出的任务，可能拖住整个任务层的进度。[FreeRTOS 调度规则](https://github.com/FreeRTOS/FreeRTOS-Website-Content/blob/main/content/en-us/Documentation/02-Kernel/02-Kernel-features/01-Tasks-and-co-routines/04-Task-scheduling.md)
 
@@ -3078,6 +3205,27 @@ flowchart LR
 #### 每个任务是否各有一个栈指针？
 
 每个任务有自己的栈内存，以及保存在 TCB 中的栈位置；**不是每创建一个任务，CPU 就增加一套硬件 SP 寄存器**。在这里讨论的 Cortex-M FreeRTOS 移植中，任务通常通过 PSP 使用自己的栈，处理异常通常使用 MSP。切换任务时，把旧任务保存现场后的栈位置记录到旧 TCB，再根据新 TCB 恢复新任务的栈和 PSP。硬件寄存器被轮流使用，各任务的保存值留在各自的软件数据结构中。
+
+<a id="freertos-core-exceptions"></a>
+#### SVC、PendSV、SysTick 与 FreeRTOS 的分工
+
+这三个都是 Cortex-M 提供的内核异常，FreeRTOS 利用其完成任务启动、计时和上下文切换；它们不是业务任务，也不是 FreeRTOS 凭空创建的硬件功能。以下按机器狗普通 GCC ARM_CM4F 移植解释，不能直接套到所有 RTOS／MPU 移植：
+
+| 异常 | 触发方式 | 在这份移植中的主要工作 |
+| --- | --- | --- |
+| SVC | 执行 `svc` 指令，同步请求异常 | 调度器启动时通过 `svc 0` 进入处理函数，恢复第一个任务的初始现场与 PSP，再异常返回到任务入口 |
+| PendSV | 软件写 `PENDSVSET` 请求，条件允许时进入 | 保存旧任务现场与栈位置，调用调度器选任务，恢复新任务现场并返回 |
+| SysTick | 内核定时器到期 | 推进 Tick、检查延时到期和轮转／抢占条件；需要调度时请求 PendSV |
+
+```text
+启动：启动调度器 → svc 0 → SVC 恢复第一个任务 → 开始执行任务
+计时：SysTick → 推进时间、更新就绪状态 → 如需调度则请求 PendSV
+阻塞：osDelay／等待队列等 → 当前任务阻塞 → 请求 PendSV
+```
+
+第一个任务此前没有真正暂停过，因此其“待恢复现场”是在创建时由 `pxPortInitialiseStack()` 构造的，PC 指向任务入口。该移植的 SVC 主要用于首次任务启动，**不是每调用一个 FreeRTOS API 都执行 SVC**；带 MPU 等其他移植可能用 SVC 提供额外服务。PendSV 和 SysTick 设为最低优先级，使更紧急的 ISR 可以先完成；SVC 的配置和内部用途不能直接类比普通外设 ISR 调用 API 的门槛。
+
+本工程通过 `FreeRTOSConfig.h` 将 `vPortSVCHandler`、`xPortPendSVHandler` 映射到 `SVC_Handler`、`PendSV_Handler`；Tick 处理还存在 CMSIS 包装及条件编译，应沿实际构建确认入口。其他平台也可用别的定时器提供 Tick，Tickless 模式还会改变周期唤醒方式。[ARM_CM4F 移植源码](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/main/portable/GCC/ARM_CM4F/port.c)
 
 <a id="freertos-pendsv"></a>
 #### PendSV 是什么？结合 Cortex-M4F 源码看任务切换
@@ -3224,6 +3372,7 @@ FreeRTOS 提供可预测的优先级调度、任务通知与队列等机制，�
 | 队列 `Queue` | 任务间传递固定大小的消息 | 队列会复制消息内容；若传指针，只复制指针，需管理所指数据的生命周期。 |
 | 直接任务通知 `Task Notification` | 向确定的单个任务发事件或较小的值 | 不必单独创建队列或信号量，开销较小；接收方只能是指定任务。 |
 | 二值信号量 | 完成通知、一次事件已发生 | 只有“有／无”两种状态；不承载业务数据，也不累计多次事件。 |
+| 计数信号量 | 记录资源额度或尚未处理的事件次数 | 可以累计到设定上限；不保存每次事件的具体载荷，需要数据内容时配合缓冲区或队列。 |
 | 互斥锁 `Mutex` | 多任务访问共享设备或共享变量 | 用于互斥，支持优先级继承；与普通二值信号量的用途不同。 |
 | 事件组 `Event Group` | 等待一个或多个条件同时满足 | 每一位可代表一个事件或状态。 |
 | 流／消息缓冲区 | 传连续字节流或变长消息 | 默认按单写入者、单读取者设计；多写或多读要另外同步。 |
