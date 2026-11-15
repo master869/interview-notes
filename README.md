@@ -46,7 +46,7 @@
 - [智能卡读卡器实习技术](#smartcard-internship)
   - [ThreadX 与任务同步](#threadx-smartcard) · [ISO7816 与 APDU](#iso7816-apdu) · [Flash 参数持久化](#flash-parameters) · [USBX 与 CCID](#usbx-ccid)
 - [C/C++ 基础](#c-basics)
-  - [`const`：作用与使用场景](#const) · [`volatile`](#volatile) · [`const` 与 `volatile`](#const-volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
+  - [`const`：作用与使用场景](#const) · [`volatile`](#volatile) · [`const` 与 `volatile`](#const-volatile) · [C 语言访问寄存器](#register-access-c) · [`static`](#static) · [`register`](#register-keyword) · [同名变量与遮蔽](#variable-shadowing) · [结构体内存对齐](#struct-alignment) · [`malloc` 与 `free`](#malloc-free) · [内存泄漏](#memory-leak)
 - [数据结构：栈与队列](#stack-queue)
 - [数组](#arrays)
   - [数组的存储与下标](#array-basics) · [数组越界](#array-out-of-bounds)
@@ -2757,6 +2757,57 @@ void process_data(int data[static 10]) {
 
 来源：[海康 BSP 嵌入式开发实习面试经验](https://chrisy0618.github.io/2025/04/15/hello-world/)。
 <!-- TOPIC:static:END -->
+
+<a id="register-keyword"></a>
+### `register`：建议快速访问的局部变量
+<!-- TOPIC:register-keyword:START -->
+
+**面试问题：`register` 关键字有什么作用？一定会把变量放到寄存器中吗？** 按 C11／C17 规则，`register` 是存储类说明符，建议实现尽可能快速地访问该对象，通常理解为建议优先放入 CPU 寄存器。**是否采纳由实现决定，不保证分配寄存器，也不指定使用哪个寄存器。**
+
+```c
+unsigned sum(register unsigned n)  /* 可用于函数定义的参数。 */
+{
+    register unsigned total = 0;
+
+    for (register unsigned i = 0; i < n; ++i) {
+        total += i;
+    }
+
+    return total;
+}
+```
+
+上例演示语法，不代表加上关键字就一定比普通变量快。编译器也可以把没有 `register` 的局部变量分配到寄存器；实际代码由优化策略和寄存器使用情况决定。
+
+#### 使用范围、生命周期与取地址限制
+
+- 用于块作用域的局部对象或函数参数，不能用于文件作用域的全局变量，也不能用来声明函数。
+- 对象仍具有自动存储期，不会像局部 `static` 一样跨函数调用保留；不能把它理解为另一种堆空间或永久保留的寄存器。
+- **在 C11／C17 中，不能对声明为 `register` 的对象使用取地址运算符 `&`。即使实现最终把它放在内存中，这条限制也成立。**
+
+```c
+void example(void)
+{
+    register int count = 10;
+    /* int *p = &count; */  /* 不合法：对 register 对象取地址。 */
+    (void)count;
+}
+```
+
+#### 与普通局部变量、`static` 和硬件寄存器的区别
+
+| 概念 | 含义 |
+| --- | --- |
+| 普通自动局部变量 `int x;` | 可能放在栈、寄存器中或被优化掉，可以按语言规则取地址 |
+| `register int x;` | 建议快速访问；仍为自动存储期，但在上述 C 规则下不能取地址 |
+| 局部 `static int x;` | 静态存储期，跨调用保留值；典型位置为 `.data`／`.bss` |
+| CPU 的 R0、R1 等寄存器 | 实际硬件资源，由编译器、调用约定和上下文切换等使用 |
+| 外设寄存器访问 | 通过厂商头文件或映射地址访问，常配合 `volatile`；不是靠 `register` 关键字完成 |
+
+**面试简答：** “`register` 建议编译器让局部变量或参数得到快速访问，通常是优先考虑寄存器，但不保证采纳；在 C11／C17 中不能对它取地址。它仍具有自动存储期，编译器也能自行给普通变量分配寄存器。”
+
+本节讨论 C 的规则，不将其直接套用到 C++ 的不同标准版本。关联：[核心与外设寄存器](#register-categories)、[C 语言访问寄存器](#register-access-c)、[`static`](#static)。参考：[C11 公开草案 N1570 §6.7.1、§6.5.3.2、§6.2.4](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)。
+<!-- TOPIC:register-keyword:END -->
 
 <a id="variable-shadowing"></a>
 ### 同名变量与遮蔽
